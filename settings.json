@@ -89,5 +89,19 @@
       "Read(~/.claude/.credentials.json)",
       "Bash(cmdkey *)"
     ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{PYTHON}}\" \"{{REPO}}/cc.py\" check --daily --quiet --hook",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
   }
 }
