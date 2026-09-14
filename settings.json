@@ -18,6 +18,7 @@
     "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
   },
   "permissions": {
+    "defaultMode": "auto",	  
     "allow": [
       "Read",
       "Edit(**)",
