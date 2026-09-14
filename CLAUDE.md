@@ -7,7 +7,6 @@
 - Subject ≤50 chars, imperative mood. Conventional Commits, minus the `feat:` prefix.
 - Most commits need no body. When one earns its place: ≤10 lines, under 5 preferred, ~70 chars/line, plain prose with no section headers. The PR body is a separate artifact, so don't restate it here.
 - One commit per purpose. Split a multi-purpose change into a handful of logical commits, not one omnibus and not a swarm of micro-commits.
-- Signing is configured and a locked gpg agent fails the commit. Ask the user to unlock it rather than routing around the signature.
 
 ### Pushing
 
@@ -16,7 +15,7 @@
 
 ### Remote Work
 
-- Use CLI tools `gh` and `glab` to interact with remotes for accessing issues, pull requests, etc.
+- Use the CLI tool `gh` to interact with remotes for accessing issues, pull requests, etc.
 - Never use write access on remotes (such as github, gitlab, etc) without explicit permission from the user. These permissions are SINGLE TURN ONLY, same as pushing. Also permissions to do remote work are SINGLE PURPOSE ONLY. Do what is explicitly requested, never use a permission to perform one action on a remote as permission to do extra work. If extra work seems necessary, ask the user.
 - Text that lands on a remote — PR titles and bodies, issue text, commit messages, release notes — cites repo-relative paths only (`src/release_ci.jl`). Describe the content, not where it came from: `~/...`, `/home/...`, `/tmp/...` and `.claude/...` mean nothing to the reader and leak what else is on the machine. Paths on the CI runner that the workflow itself asserts on are fine.
 
@@ -27,7 +26,7 @@
 
 ## Work like a scientist
 
-Investigative work belongs to the skills, not to a summary in this file. For debugging, unexpected behavior, "why does X happen?", a performance, security, or correctness assertion, or any report claiming an issue was found, load the skill that owns the discipline and follow its body. `systematic-debugging` owns bugs and unexpected behavior, `tdd` owns implementation, `verification-before-completion` owns claims of done. This file deliberately restates none of them.
+Investigative work belongs to the skills, not to a summary in this file. For debugging, unexpected behavior, "why does X happen?", a performance, security, or correctness assertion, or any report claiming an issue was found, load the skill that owns the discipline and follow its body. `systematic-debugging` owns bugs and unexpected behavior, `tdd` owns implementation wherever a test is practical, `verification-before-completion` owns claims of done. This file deliberately restates none of them.
 
 **Rigor is proportional:** the skill's full procedure for investigations, bug diagnoses, and perf/security/correctness assertions; lightweight hypothesis-then-verify for small edits.
 
@@ -36,6 +35,7 @@ This is the positive half of "No speculative comments or doc claims" below. Work
 **Exceptions:**
 
 - **Clearly formulated feature requests.** When the user asks to add or tweak functionality and the request is unambiguous, implement it. Do not hypothesize about whether the feature is warranted or attempt to falsify the premise. "This works" and "done" still require verification, and any bug discovered during implementation gets the full investigative treatment.
+- **Code where a test-first loop is impractical.** PyQt widgets and other GUI surfaces, one-off scripts, and documentation-only repositories are implemented directly. `tdd` still applies to logic that can be tested headlessly. Say which side a change falls on rather than skipping the question.
 - **Creative tasks.** Brainstorming, naming, copy, visual/UX taste, and open-ended design are not falsifiable; the user may say "creative" to opt out. If a task looks creative and the user has not flagged it, ask one clarifying question before reaching for the skills above.
 
 ## No speculative comments or doc claims
