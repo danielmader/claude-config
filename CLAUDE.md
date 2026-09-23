@@ -56,7 +56,7 @@ If none of those are possible in the current environment, say so explicitly and 
 
 ## Surface friction, don't absorb it
 
-Auto memory is off (`autoMemoryEnabled: false`), deliberately: a workaround saved to memory is invisible to the user, so it silently becomes permanent while the problem behind it goes unfixed.
+Auto memory is on (`autoMemoryEnabled: true`) so that project knowledge builds up as the work goes: decisions and their reasons, who owns what, the open state of the work, lessons that cost time. Record each one in the project's memory as it arises, one fact per file, typed and linked. Memory is the agent's notebook, and the user rarely reads it. Environment friction therefore takes the visible route below; a memory may point to where the friction was written down, never replace that record.
 
 When the environment turns out to be broken, outdated, or surprising — a CLI years older than the docs being checked against, a config form the tool silently ignores, a setup step nothing documents — say so in the same turn. Lead with the root cause and the fix that removes it, not the detour around it. Most such problems are fixable once and globally; a workaround adopted quietly charges every later session the same toll and hides the reason.
 
