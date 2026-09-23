@@ -23,6 +23,10 @@
 
 - In every AE project, start each `ChangeComment` you write with `[AI Agent] `. That covers the `changeComment` of `ae_create_item` and `ae_update_attributes` and any page save a script sends. The redoc-tools write shim (`lib/ae_write.js`) adds the prefix for scripts. A direct tool call carries it only if you write it. Once aligned-elements-mcp PR #16 is released and installed, the server adds it and this rule can go.
 
+## Re-documentation projects
+
+- A folder with a `redoc.config.json` is a re-documentation project. Before you write a script in one, decide where it lives: a script a second redoc project would run unchanged goes into `~/devel/redoc-tools` and is committed there; a script that names this project's items, sources, people or findings goes into the project's `tools/`. The toolbox README ("What is here and what is not") holds the full rule; a toolbox script finds the project through `lib/project.js` and the bundles through `lib/bundles.js`.
+
 ## Secrets
 
 - Never read, print, log, or commit credential material: `.env*` files, `*.pem`, `*.key`, SSH keys, API tokens, connection strings, Key Vault values.
