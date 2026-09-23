@@ -19,6 +19,10 @@
 - Never use write access on remotes (such as github, gitlab, etc) without explicit permission from the user. These permissions are SINGLE TURN ONLY, same as pushing. Also permissions to do remote work are SINGLE PURPOSE ONLY. Do what is explicitly requested, never use a permission to perform one action on a remote as permission to do extra work. If extra work seems necessary, ask the user.
 - Text that lands on a remote — PR titles and bodies, issue text, commit messages, release notes — cites repo-relative paths only (`src/release_ci.jl`). Describe the content, not where it came from: `~/...`, `/home/...`, `/tmp/...` and `.claude/...` mean nothing to the reader and leak what else is on the machine. Paths on the CI runner that the workflow itself asserts on are fine.
 
+### Aligned Elements saves
+
+- In every AE project, start each `ChangeComment` you write with `[AI Agent] `. That covers the `changeComment` of `ae_create_item` and `ae_update_attributes` and any page save a script sends. The redoc-tools write shim (`lib/ae_write.js`) adds the prefix for scripts. A direct tool call carries it only if you write it. Once aligned-elements-mcp PR #16 is released and installed, the server adds it and this rule can go.
+
 ## Secrets
 
 - Never read, print, log, or commit credential material: `.env*` files, `*.pem`, `*.key`, SSH keys, API tokens, connection strings, Key Vault values.
