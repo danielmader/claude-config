@@ -14,7 +14,10 @@
   },
   "theme": "dark",
   "switchModelsOnFlag": false,
-  "autoMemoryEnabled": true,
+  "autoMemoryEnabled": false,
+  "skillOverrides": {
+    "unslop": "user-invocable-only"
+  },
   "agentPushNotifEnabled": true,
   "enableAllProjectMcpServers": true,
   "env": {
@@ -100,7 +103,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"{{PYTHON}}\" \"{{REPO}}/cc.py\" check --daily --quiet --hook",
+            "command": "\"{{UV}}\" run --script \"{{REPO}}/cc.py\" check --daily --quiet --hook",
             "timeout": 120
           }
         ]
