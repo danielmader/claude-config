@@ -200,18 +200,32 @@ class RepoCheckTests(unittest.TestCase):
         subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
                         '-c', 'commit.gpgsign=false', *args], check=True, capture_output=True)
 
+    def fork(self, root):
+        """A clone of a fork of `source`, with `source` as its upstream remote."""
+        source, fork, repo = root / 'source', root / 'fork.git', root / 'repo'
+        self.git('init', '-q', '-b', 'main', str(source))
+        self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+        self.git('clone', '-q', '--bare', str(source), str(fork))
+        self.git('clone', '-q', str(fork), str(repo))
+        self.git('-C', str(repo), 'remote', 'add', 'upstream', str(source))
+        return source, repo
+
     def test_fork_reports_commits_behind_its_upstream_remote(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            source, fork, repo = root / 'source', root / 'fork.git', root / 'repo'
-            self.git('init', '-q', '-b', 'main', str(source))
-            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
-            self.git('clone', '-q', '--bare', str(source), str(fork))
-            self.git('clone', '-q', str(fork), str(repo))
-            self.git('-C', str(repo), 'remote', 'add', 'upstream', str(source))
+            source, repo = self.fork(Path(tmp))
             with patch.object(cc, 'REPO', repo):
                 self.assertEqual(cc.check_repo(False), [])
                 self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, merge it then install'])
+
+    def test_branch_tracking_a_local_branch_checks_upstream_for_that_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'checkout', '-q', '-b', 'topic')
+            self.git('-C', str(repo), 'branch', '-q', '--set-upstream-to=main')
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
                 self.assertEqual(cc.check_repo(False),
                                  ['1 commit(s) behind upstream/main, merge it then install'])
 

@@ -713,7 +713,10 @@ def check_repo(offline: bool) -> list[str]:
         out.append(f"{behind} commit(s) behind {tracked}, git pull then install")
     if int(ahead):
         out.append(f"{ahead} commit(s) ahead of {tracked}, not pushed")
-    out += check_fork(tracked.split("/", 1)[1])
+    # `tracked` has no remote part when the upstream is a local branch.
+    head = run(["git", "symbolic-ref", "--short", "HEAD"], cwd=REPO)
+    merge = run(["git", "config", f"branch.{head}.merge"], cwd=REPO)
+    out += check_fork(merge.removeprefix("refs/heads/"))
     return out
 
 
