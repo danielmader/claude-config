@@ -1,5 +1,5 @@
 {
-  "model": "claude-opus-5",
+  "model": "claude-opus-5-5",
   "effortLevel": "xhigh",
   "modelSettings": {
     "claude-opus-5": {
@@ -21,7 +21,7 @@
   "agentPushNotifEnabled": true,
   "enableAllProjectMcpServers": true,
   "env": {
-    "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5-5"
   },
   "permissions": {
     "defaultMode": "auto",
@@ -74,28 +74,31 @@
       "Bash(git show *)",
       "Bash(git merge *)",
       "Bash(git stash *)",
-      "Bash(git rm *)",
-      "Bash(git -C * status *)",
-      "Bash(git -C * log *)",
-      "Bash(git -C * diff *)",
-      "Bash(git -C * branch *)",
-      "Bash(git -C * add *)",
-      "Bash(git -C * commit *)",
-      "Bash(git -C * checkout *)",
-      "Bash(git -C * show *)"
+      "Bash(git rm *)"
     ],
     "deny": [
-      "Read(**/.env)",
-      "Read(**/.env.*)",
-      "Read(**/secrets/**)",
-      "Read(**/*.pem)",
-      "Read(**/*.key)",
+      "Read(//**/.env)",
+      "Read(//**/.env.*)",
+      "Read(//**/secrets/**)",
+      "Read(//**/*.pem)",
+      "Read(//**/*.key)",
       "Read(~/.ssh/**)",
       "Read(~/.npmrc)",
       "Read(~/.claude/.credentials.json)",
       "Bash(cmdkey *)"
     ]
   },
+  "deniedMcpServers": [
+    {
+      "serverName": "claude.ai Gmail"
+    },
+    {
+      "serverName": "claude.ai Google Calendar"
+    },
+    {
+      "serverName": "claude.ai Google Drive"
+    }
+  ],
   "hooks": {
     "SessionStart": [
       {
