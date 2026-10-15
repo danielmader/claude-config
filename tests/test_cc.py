@@ -219,6 +219,14 @@ class RepoCheckTests(unittest.TestCase):
                 self.assertEqual(cc.check_repo(False),
                                  ['1 commit(s) behind upstream/main, merge it then install'])
 
+    def test_unreachable_upstream_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'remote', 'set-url', 'upstream', str(Path(tmp) / 'gone'))
+            with patch.object(cc, 'REPO', repo):
+                [line] = cc.check_repo(False)
+            self.assertRegex(line, r'^upstream fetch failed \(.+\)$')
+
     def test_branch_tracking_a_local_branch_checks_upstream_for_that_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, repo = self.fork(Path(tmp))
