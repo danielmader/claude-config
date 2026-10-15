@@ -22,13 +22,14 @@ class VerdictTests(unittest.TestCase):
         cmd = "cat <<'EOF'\nplain text with one " + BS + "n\nEOF"
         self.assertIsNone(guard.verdict(cmd))
 
-    def test_double_backslash_without_heredoc_passes(self):
-        cmd = "printf '%s' 'C:" + BS + BS + "Windows'"
-        self.assertIsNone(guard.verdict(cmd))
+    # Measured 2026-10-15: outside a heredoc too, printf '%s' 'a\\b' printed a\b, and a\\\\b arrived as a\\b.
+    def test_double_backslash_without_heredoc_is_refused(self):
+        self.assertIsNotNone(guard.verdict("printf '%s' 'C:" + BS + BS + "Windows'"))
+        self.assertIsNotNone(guard.verdict("node -e 'x(\"" + BS + BS + "d\")'"))
+        self.assertIsNotNone(guard.verdict("grep x <<< 'a" + BS + BS + "b'"))
 
-    def test_here_string_and_shift_are_not_heredocs(self):
-        self.assertIsNone(guard.verdict("grep x <<< 'a" + BS + BS + "b'"))
-        self.assertIsNone(guard.verdict("echo $((1 << 2)) '" + BS + BS + "'"))
+    def test_single_backslashes_pass(self):
+        self.assertIsNone(guard.verdict("printf 'a" + BS + "nb' && echo $((1 << 2))"))
 
 
 class HookOutputTests(unittest.TestCase):
@@ -46,6 +47,30 @@ class HookOutputTests(unittest.TestCase):
 
     def test_allowed_command_prints_nothing(self):
         res = self.run_hook("ls -la")
+        self.assertEqual((res.returncode, res.stdout), (0, ""))
+
+
+class SettingsPrecheckTests(unittest.TestCase):
+    """The shell pre-check in settings.json starts the hook only for a command with a double backslash."""
+
+    def run_precheck(self, command):
+        import shutil
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("no bash")
+        settings = json.loads((HOOK.parent.parent / "settings.json").read_text(encoding="utf-8"))
+        hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        hook = hook.replace('"{{UV}}" run --script', '"' + Path(sys.executable).as_posix() + '"')
+        hook = hook.replace("{{REPO}}", HOOK.parent.parent.as_posix())
+        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
+        return subprocess.run([bash, "-c", hook], input=payload, capture_output=True, text=True)
+
+    def test_double_backslash_outside_a_heredoc_reaches_the_hook(self):
+        res = self.run_precheck("printf '%s' 'a" + BS + BS + "b'")
+        self.assertEqual(json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_single_backslash_does_not_start_the_hook(self):
+        res = self.run_precheck("printf 'a" + BS + "nb'")
         self.assertEqual((res.returncode, res.stdout), (0, ""))
 
 
