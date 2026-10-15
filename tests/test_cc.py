@@ -227,6 +227,15 @@ class RepoCheckTests(unittest.TestCase):
                 [line] = cc.check_repo(False)
             self.assertRegex(line, r'^upstream fetch failed \(.+\)$')
 
+    def test_fork_branch_that_upstream_lacks_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'checkout', '-q', '-b', 'fix-x')
+            self.git('-C', str(repo), 'push', '-q', '-u', 'origin', 'fix-x')
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+
     def test_branch_tracking_a_local_branch_checks_upstream_for_that_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, repo = self.fork(Path(tmp))

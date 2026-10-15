@@ -725,9 +725,11 @@ def check_fork(branch: str) -> list[str]:
     if "upstream" not in run(["git", "remote"], cwd=REPO).split():
         return []
     try:
-        run(["git", "fetch", "--quiet", "upstream", branch], cwd=REPO)
+        run(["git", "fetch", "--quiet", "upstream"], cwd=REPO)
     except RuntimeError as e:
         return [f"upstream fetch failed ({e.args[0].splitlines()[-1]})"]
+    if not run(["git", "branch", "--remotes", "--list", f"upstream/{branch}"], cwd=REPO):
+        return []
     behind = run(["git", "rev-list", "--count", f"HEAD..upstream/{branch}"], cwd=REPO)
     if int(behind):
         return [f"{behind} commit(s) behind upstream/{branch}, merge it then install"]
