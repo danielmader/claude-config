@@ -715,8 +715,9 @@ def check_repo(offline: bool) -> list[str]:
         out.append(f"{ahead} commit(s) ahead of {tracked}, not pushed")
     # `tracked` has no remote part when the upstream is a local branch.
     head = run(["git", "symbolic-ref", "--short", "HEAD"], cwd=REPO)
-    merge = run(["git", "config", f"branch.{head}.merge"], cwd=REPO)
-    out += check_fork(merge.removeprefix("refs/heads/"))
+    if run(["git", "config", f"branch.{head}.remote"], cwd=REPO) != "upstream":
+        merge = run(["git", "config", f"branch.{head}.merge"], cwd=REPO)
+        out += check_fork(merge.removeprefix("refs/heads/"))
     return out
 
 

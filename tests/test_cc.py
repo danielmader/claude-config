@@ -236,6 +236,17 @@ class RepoCheckTests(unittest.TestCase):
             with patch.object(cc, 'REPO', repo):
                 self.assertEqual(cc.check_repo(False), [])
 
+    def test_branch_tracking_upstream_reports_drift_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = Path(tmp) / 'source', Path(tmp) / 'repo'
+            self.git('init', '-q', '-b', 'main', str(source))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+            self.git('clone', '-q', '-o', 'upstream', str(source), str(repo))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, git pull then install'])
+
     def test_branch_tracking_a_local_branch_checks_upstream_for_that_branch(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, repo = self.fork(Path(tmp))
