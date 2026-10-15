@@ -236,6 +236,15 @@ class RepoCheckTests(unittest.TestCase):
             with patch.object(cc, 'REPO', repo):
                 self.assertEqual(cc.check_repo(False), [])
 
+    def test_clone_without_upstream_remote_skips_the_fork_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = Path(tmp) / 'source', Path(tmp) / 'repo'
+            self.git('init', '-q', '-b', 'main', str(source))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+            self.git('clone', '-q', str(source), str(repo))
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+
     def test_branch_tracking_upstream_reports_drift_once(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, repo = Path(tmp) / 'source', Path(tmp) / 'repo'
