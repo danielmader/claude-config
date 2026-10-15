@@ -53,25 +53,33 @@ class HookOutputTests(unittest.TestCase):
 class SettingsPrecheckTests(unittest.TestCase):
     """The shell pre-check in settings.json starts the hook only for a command with a double backslash."""
 
-    def run_precheck(self, command):
+    GUARD = '"{{UV}}" run --script "{{REPO}}/hooks/heredoc_guard.py"'
+
+    def run_precheck(self, command, guard):
+        """Run the pre-check through `bash -c`, as Claude Code does, with `guard` in place of the uv call."""
         import shutil
         bash = shutil.which("bash")
         if not bash:
             self.skipTest("no bash")
         settings = json.loads((HOOK.parent.parent / "settings.json").read_text(encoding="utf-8"))
         hook = settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
-        hook = hook.replace('"{{UV}}" run --script', '"' + Path(sys.executable).as_posix() + '"')
-        hook = hook.replace("{{REPO}}", HOOK.parent.parent.as_posix())
-        payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}})
-        return subprocess.run([bash, "-c", hook], input=payload, capture_output=True, text=True)
+        self.assertIn(self.GUARD, hook)
+        # Claude Code sends Windows paths, which JSON escapes with a double backslash.
+        payload = json.dumps({"cwd": "C:" + BS + "Users" + BS + "x", "tool_name": "Bash",
+                              "tool_input": {"command": command}})
+        return subprocess.run([bash, "-c", hook.replace(self.GUARD, guard)],
+                              input=payload, capture_output=True, text=True)
 
     def test_double_backslash_outside_a_heredoc_reaches_the_hook(self):
-        res = self.run_precheck("printf '%s' 'a" + BS + BS + "b'")
+        res = self.run_precheck("printf '%s' 'a" + BS + BS + "b'",
+                                '"' + Path(sys.executable).as_posix() + '" "' + HOOK.as_posix() + '"')
         self.assertEqual(json.loads(res.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
 
-    def test_single_backslash_does_not_start_the_hook(self):
-        res = self.run_precheck("printf 'a" + BS + "nb'")
-        self.assertEqual((res.returncode, res.stdout), (0, ""))
+    def test_command_without_double_backslash_does_not_start_the_hook(self):
+        for command in ("ls -la", "printf 'a" + BS + "nb'"):
+            with self.subTest(command=command):
+                res = self.run_precheck(command, "echo started")
+                self.assertEqual((res.returncode, res.stdout), (0, ""))
 
 
 if __name__ == "__main__":
