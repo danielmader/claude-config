@@ -2,31 +2,31 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""PreToolUse hook for Bash: refuse a heredoc that carries a double backslash.
+"""PreToolUse hook for Bash: refuse a command that carries a double backslash.
 
-On this Windows machine the Bash tool turns a double backslash in a heredoc body into a single one, while a
-single backslash passes (measured 2026-10-07). A Python or JavaScript string literal needs the double one, so
-"\\b" arrived as "\b" and wrote a backspace byte into a source file; earlier a regex became a NUL byte and
-'C:\\Windows' became 'C:Windows' (see rules/windows-shell.md). The way out is to write the script with the
-Write tool and run the file, or to edit with the Edit tool; both pass backslashes unchanged.
+On this Windows machine the Bash tool turns every double backslash of a command into a single one, while a single
+backslash passes. That holds in a heredoc body (measured 2026-10-07) and also in single quotes, double quotes and
+plain arguments (measured 2026-10-15: printf '%s' 'a\\b' printed a\b, and a\\\\b arrived as a\\b). A Python or
+JavaScript string literal needs the double one, so "\\b" arrived as "\b" and wrote a backspace byte into a source file;
+earlier a regex became a NUL byte and 'C:\\Windows' became 'C:Windows' (see rules/windows-shell.md). The way out is to
+write the script with the Write tool and run the file, or to edit with the Edit tool; both pass backslashes unchanged.
+The hook sees the command before the loss, so it can refuse it.
 """
 import json
-import re
 import sys
 
-HEREDOC = re.compile(r"(?<!<)<<-?(?!<)\s*['\"]?[A-Za-z_]")
 DOUBLE_BACKSLASH = "\\\\"
 
 REASON = (
-    "This command has a heredoc and a double backslash. The Bash tool turns a double backslash in a heredoc "
-    "into a single one, which silently corrupts string literals and regexes. Write the script with the Write "
-    "tool into the scratchpad and run that file, or change files with the Edit tool."
+    "This command has a double backslash. The Bash tool turns every double backslash into a single one, in a "
+    "heredoc as well as in quotes and arguments, which silently corrupts string literals, regexes and paths. "
+    "Write the script with the Write tool into the scratchpad and run that file, or change files with the Edit tool."
 )
 
 
 def verdict(command: str):
     """The reason to refuse the command, or None to let it run."""
-    if HEREDOC.search(command) and DOUBLE_BACKSLASH in command:
+    if DOUBLE_BACKSLASH in command:
         return REASON
     return None
 
