@@ -24,13 +24,13 @@ existing commands and hooks. `vendor` updates the shared sources for both.
 | Skills | `~/.claude/skills/` | `~/.agents/skills/` |
 | Settings | `~/.claude/settings.json` | `~/.codex/config.toml` |
 | Startup drift check | inside settings | `~/.codex/hooks.json` |
-| Backslash guard (`hooks/heredoc_guard.py`) | inside settings | — |
+| Backslash guard (`hooks/heredoc_guard.py`) | inside settings, Windows only | — |
 
-The guard refuses a Bash command that has a double backslash: on Windows the
-Bash tool turns every `\\` into `\`, in a heredoc as well as in quotes and
-arguments, which silently corrupts string literals, regexes and paths. It points
-to the Write and Edit tools instead. A shell pre-check starts the guard only for
-a command with `\\`.
+On Windows the Bash tool turns every `\\` into `\`, in a heredoc as well as in
+quotes and arguments, which silently corrupts string literals, regexes and
+paths. There the guard refuses a Bash command that has a double backslash and
+points to the Write and Edit tools instead. A shell pre-check starts the guard
+only for a command with `\\`. Other systems do not get the guard.
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override the respective configuration roots.
 `CODEX_SKILLS_DIR` overrides this installer's Codex skill destination for testing

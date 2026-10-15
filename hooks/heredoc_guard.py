@@ -4,13 +4,12 @@
 # ///
 """PreToolUse hook for Bash: refuse a command that carries a double backslash.
 
-On this Windows machine the Bash tool turns every double backslash of a command into a single one, while a single
+On Windows the Bash tool turns every double backslash of a command into a single one, while a single
 backslash passes. That holds in a heredoc body (measured 2026-10-07) and also in single quotes, double quotes and
 plain arguments (measured 2026-10-15: printf '%s' 'a\\b' printed a\b, and a\\\\b arrived as a\\b). A Python or
-JavaScript string literal needs the double one, so "\\b" arrived as "\b" and wrote a backspace byte into a source file;
-earlier a regex became a NUL byte and 'C:\\Windows' became 'C:Windows' (see rules/windows-shell.md). The way out is to
-write the script with the Write tool and run the file, or to edit with the Edit tool; both pass backslashes unchanged.
-The hook sees the command before the loss, so it can refuse it.
+JavaScript string literal needs the double one, so "\\b" arrived as "\b" and wrote a backspace byte into a source file.
+The way out is to write the script with the Write tool and run the file, or to edit with the Edit tool; both pass
+backslashes unchanged. The hook sees the command before the loss, so it can refuse it.
 """
 import json
 import sys
@@ -18,8 +17,8 @@ import sys
 DOUBLE_BACKSLASH = "\\\\"
 
 REASON = (
-    "This command has a double backslash. The Bash tool turns every double backslash into a single one, in a "
-    "heredoc as well as in quotes and arguments, which silently corrupts string literals, regexes and paths. "
+    "This command has a double backslash. On Windows the Bash tool turns every double backslash into a single one, "
+    "in a heredoc as well as in quotes and arguments, which silently corrupts string literals, regexes and paths. "
     "Write the script with the Write tool into the scratchpad and run that file, or change files with the Edit tool."
 )
 
