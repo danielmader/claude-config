@@ -713,7 +713,22 @@ def check_repo(offline: bool) -> list[str]:
         out.append(f"{behind} commit(s) behind {tracked}, git pull then install")
     if int(ahead):
         out.append(f"{ahead} commit(s) ahead of {tracked}, not pushed")
+    out += check_fork(tracked.split("/", 1)[1])
     return out
+
+
+def check_fork(branch: str) -> list[str]:
+    """A fork tracks its own remote; new work of the source shows only here."""
+    if "upstream" not in run(["git", "remote"], cwd=REPO).split():
+        return []
+    try:
+        run(["git", "fetch", "--quiet", "upstream", branch], cwd=REPO)
+    except RuntimeError as e:
+        return [f"upstream fetch failed ({e.args[0].splitlines()[-1]})"]
+    behind = run(["git", "rev-list", "--count", f"HEAD..upstream/{branch}"], cwd=REPO)
+    if int(behind):
+        return [f"{behind} commit(s) behind upstream/{branch}, merge it then install"]
+    return []
 
 
 def check_local(cfg: Path, target: str = "claude") -> list[str]:
