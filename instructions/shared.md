@@ -7,7 +7,6 @@
 - Subject ≤50 chars, imperative mood. Conventional Commits, minus the `feat:` prefix.
 - Most commits need no body. When one earns its place: ≤10 lines, under 5 preferred, ~70 chars/line, plain prose with no section headers. The PR body is a separate artifact, so don't restate it here.
 - One commit per purpose. Split a multi-purpose change into a handful of logical commits, not one omnibus and not a swarm of micro-commits.
-- Signing is configured and a locked gpg agent fails the commit. Ask the user to unlock it rather than routing around the signature.
 
 ### Pushing
 
@@ -16,9 +15,13 @@
 
 ### Remote Work
 
-- Use CLI tools `gh` and `glab` to interact with remotes for accessing issues, pull requests, etc.
+- Use the CLI tool `gh` to interact with remotes for accessing issues, pull requests, etc.
 - Never use write access on remotes (such as github, gitlab, etc) without explicit permission from the user. These permissions are SINGLE TURN ONLY, same as pushing. Also permissions to do remote work are SINGLE PURPOSE ONLY. Do what is explicitly requested, never use a permission to perform one action on a remote as permission to do extra work. If extra work seems necessary, ask the user.
 - Text that lands on a remote — PR titles and bodies, issue text, commit messages, release notes — cites repo-relative paths only (`src/release_ci.jl`). Describe the content, not where it came from: `~/...`, `/home/...`, `/tmp/...` and `.claude/...` mean nothing to the reader and leak what else is on the machine. Paths on the CI runner that the workflow itself asserts on are fine.
+
+## Re-documentation projects
+
+- A folder with a `redoc.config.json` is a re-documentation project. Before you write a script in one, decide where it lives: a script a second redoc project would run unchanged goes into `~/devel/redoc-tools` and is committed there; a script that names this project's items, sources, people or findings goes into the project's `tools/`. The toolbox README ("What is here and what is not") holds the full rule; a toolbox script finds the project through `lib/project.js` and the bundles through `lib/bundles.js`.
 
 ## Secrets
 
@@ -36,6 +39,7 @@ This is the positive half of "No speculative comments or doc claims" below. Work
 **Exceptions:**
 
 - **Clearly formulated feature requests.** When the user asks to add or tweak functionality and the request is unambiguous, implement it. Do not hypothesize about whether the feature is warranted or attempt to falsify the premise. "This works" and "done" still require verification, and any bug discovered during implementation gets the full investigative treatment.
+- **Code where a test-first loop is impractical.** PyQt widgets and other GUI surfaces, one-off scripts, and documentation-only repositories are implemented directly. `tdd` still applies to logic that can be tested headlessly. Say which side a change falls on rather than skipping the question.
 - **Creative tasks.** Brainstorming, naming, copy, visual/UX taste, and open-ended design are not falsifiable; the user may say "creative" to opt out. If a task looks creative and the user has not flagged it, ask one clarifying question before reaching for the skills above.
 
 ## No speculative comments or doc claims
@@ -66,6 +70,17 @@ When a workaround is genuinely needed, write it where a human will see it:
 - Machine- or setup-specific → the machine-local instruction location described below.
 
 Record what would make the workaround unnecessary, so it can be deleted once that lands instead of outliving the problem.
+
+## Keep project knowledge in the project
+
+Agent memory is off. What a later session needs to know goes into the repository, where it is versioned, reviewed in the diff and read by colleagues too. Record it as it arises, in the same commit as the work:
+
+- Rules and facts an agent must follow here → the repo's instruction file, one place per rule.
+- State of the work: done, open, next, who waits for whom → the project's status file (`STATUS.md` unless the project names another). Rewrite it to the current state; git keeps the history.
+- A decision and its reason → next to the rule or state it changes, dated, with the person who made it.
+- A defect in a shared tool → fix it at the source, failing test first, then regenerate what it produced and say which earlier results used the broken output. A note or a workaround leaves every later reader with wrong data.
+
+Before a session ends, bring the status file up to date. A stale entry is worse than none: when you find one, correct or delete it.
 
 ## Code style
 
