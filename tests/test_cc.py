@@ -195,6 +195,27 @@ multi_agent = false
         self.assertFalse(cc.config_dir().exists())
 
 
+class RepoCheckTests(unittest.TestCase):
+    def git(self, *args):
+        subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                        '-c', 'commit.gpgsign=false', *args], check=True, capture_output=True)
+
+    def test_fork_reports_commits_behind_its_upstream_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, fork, repo = root / 'source', root / 'fork.git', root / 'repo'
+            self.git('init', '-q', '-b', 'main', str(source))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+            self.git('clone', '-q', '--bare', str(source), str(fork))
+            self.git('clone', '-q', str(fork), str(repo))
+            self.git('-C', str(repo), 'remote', 'add', 'upstream', str(source))
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+                self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, merge it then install'])
+
+
 class VendorTests(unittest.TestCase):
     def test_content_shared_and_target_layers_and_failed_vendor(self):
         with tempfile.TemporaryDirectory() as tmp:

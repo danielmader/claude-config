@@ -41,7 +41,8 @@ files at managed instruction and skill paths are replaced. Claude's existing
 manifest remains valid.
 
 `check` reports repository, installed-file, attribution, and upstream drift.
-It applies no updates; `--daily` throttles each runtime separately to once per
+In a fork with a remote named `upstream`, it also reports commits on that
+remote's branch that are not merged yet. It applies no updates; `--daily` throttles each runtime separately to once per
 calendar day, and `--local-only` skips network checks. Startup hooks run the
 check with the appropriate target. **After installing Codex, review and trust
 its hook with `/hooks`**; Codex requires review again when the hook changes.
