@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
+WINDOWS = os.name == "nt"
 SOURCES = REPO / "sources.tsv"
 SUPPORT_SOURCES = REPO / "support-sources.tsv"
 SKILLS = REPO / "skills"
@@ -526,11 +527,23 @@ def render_settings(cfg: Path) -> bytes:
     text = text.replace("{{UV}}", json_escape(uv_executable()))
     text = text.replace("{{REPO}}", json_escape(str(REPO)))
     planned = json.loads(text)
+    if not WINDOWS:
+        drop_hook(planned["hooks"], "PreToolUse", "heredoc_guard.py")
     installed = read_json(cfg / "settings.json")
     for key in SETTINGS_LOCAL_KEYS:
         if key in installed:
             planned[key] = installed[key]
     return (json.dumps(planned, indent=2) + "\n").encode("utf-8")
+
+
+def drop_hook(hooks: dict, event: str, script: str) -> None:
+    """Remove the hooks of `event` that run `script`, and the event once it is empty."""
+    kept = [m for m in hooks.get(event, [])
+            if not any(script in h.get("command", "") for h in m["hooks"])]
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
 
 
 def read_json(path: Path) -> dict:

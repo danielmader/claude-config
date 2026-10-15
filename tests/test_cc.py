@@ -195,6 +195,16 @@ multi_agent = false
         self.assertFalse(cc.config_dir().exists())
 
 
+class SettingsTests(unittest.TestCase):
+    def test_backslash_guard_is_installed_on_windows_only(self):
+        for windows in (True, False):
+            with self.subTest(windows=windows), patch.object(cc, 'WINDOWS', windows), \
+                    tempfile.TemporaryDirectory() as tmp:
+                settings = cc.render_settings(Path(tmp)).decode()
+                self.assertEqual('heredoc_guard.py' in settings, windows)
+                self.assertEqual('PreToolUse' in settings, windows)
+
+
 class RepoCheckTests(unittest.TestCase):
     def git(self, *args):
         subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
