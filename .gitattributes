@@ -1,0 +1,7 @@
+# Text files have LF, in the repository and in the working copy, on every machine and whatever
+# core.autocrlf says (Mad, 2026-09-30). Git tells binary files (docx, pdf, xlsx …) apart itself.
+* text=auto eol=lf
+
+# cmd.exe needs CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf

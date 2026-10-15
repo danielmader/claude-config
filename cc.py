@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
+WINDOWS = os.name == "nt"
 SOURCES = REPO / "sources.tsv"
 SUPPORT_SOURCES = REPO / "support-sources.tsv"
 SKILLS = REPO / "skills"
@@ -526,11 +527,23 @@ def render_settings(cfg: Path) -> bytes:
     text = text.replace("{{UV}}", json_escape(uv_executable()))
     text = text.replace("{{REPO}}", json_escape(str(REPO)))
     planned = json.loads(text)
+    if not WINDOWS:
+        drop_hook(planned["hooks"], "PreToolUse", "heredoc_guard.py")
     installed = read_json(cfg / "settings.json")
     for key in SETTINGS_LOCAL_KEYS:
         if key in installed:
             planned[key] = installed[key]
     return (json.dumps(planned, indent=2) + "\n").encode("utf-8")
+
+
+def drop_hook(hooks: dict, event: str, script: str) -> None:
+    """Remove the hooks of `event` that run `script`, and the event once it is empty."""
+    kept = [m for m in hooks.get(event, [])
+            if not any(script in h.get("command", "") for h in m["hooks"])]
+    if kept:
+        hooks[event] = kept
+    else:
+        hooks.pop(event, None)
 
 
 def read_json(path: Path) -> dict:
@@ -713,7 +726,28 @@ def check_repo(offline: bool) -> list[str]:
         out.append(f"{behind} commit(s) behind {tracked}, git pull then install")
     if int(ahead):
         out.append(f"{ahead} commit(s) ahead of {tracked}, not pushed")
+    # `tracked` has no remote part when the upstream is a local branch.
+    head = run(["git", "symbolic-ref", "--short", "HEAD"], cwd=REPO)
+    if run(["git", "config", f"branch.{head}.remote"], cwd=REPO) != "upstream":
+        merge = run(["git", "config", f"branch.{head}.merge"], cwd=REPO)
+        out += check_fork(merge.removeprefix("refs/heads/"))
     return out
+
+
+def check_fork(branch: str) -> list[str]:
+    """A fork tracks its own remote; new work of the source shows only here."""
+    if "upstream" not in run(["git", "remote"], cwd=REPO).split():
+        return []
+    try:
+        run(["git", "fetch", "--quiet", "upstream"], cwd=REPO)
+    except RuntimeError as e:
+        return [f"upstream fetch failed ({e.args[0].splitlines()[-1]})"]
+    if not run(["git", "branch", "--remotes", "--list", f"upstream/{branch}"], cwd=REPO):
+        return []
+    behind = run(["git", "rev-list", "--count", f"HEAD..upstream/{branch}"], cwd=REPO)
+    if int(behind):
+        return [f"{behind} commit(s) behind upstream/{branch}, merge it then install"]
+    return []
 
 
 def check_local(cfg: Path, target: str = "claude") -> list[str]:

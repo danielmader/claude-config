@@ -195,6 +195,88 @@ multi_agent = false
         self.assertFalse(cc.config_dir().exists())
 
 
+class SettingsTests(unittest.TestCase):
+    def test_backslash_guard_is_installed_on_windows_only(self):
+        for windows in (True, False):
+            with self.subTest(windows=windows), patch.object(cc, 'WINDOWS', windows), \
+                    tempfile.TemporaryDirectory() as tmp:
+                settings = cc.render_settings(Path(tmp)).decode()
+                self.assertEqual('heredoc_guard.py' in settings, windows)
+                self.assertEqual('PreToolUse' in settings, windows)
+
+
+class RepoCheckTests(unittest.TestCase):
+    def git(self, *args):
+        subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                        '-c', 'commit.gpgsign=false', *args], check=True, capture_output=True)
+
+    def fork(self, root):
+        """A clone of a fork of `source`, with `source` as its upstream remote."""
+        source, fork, repo = root / 'source', root / 'fork.git', root / 'repo'
+        self.git('init', '-q', '-b', 'main', str(source))
+        self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+        self.git('clone', '-q', '--bare', str(source), str(fork))
+        self.git('clone', '-q', str(fork), str(repo))
+        self.git('-C', str(repo), 'remote', 'add', 'upstream', str(source))
+        return source, repo
+
+    def test_fork_reports_commits_behind_its_upstream_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = self.fork(Path(tmp))
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+                self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, merge it then install'])
+
+    def test_unreachable_upstream_is_reported_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'remote', 'set-url', 'upstream', str(Path(tmp) / 'gone'))
+            with patch.object(cc, 'REPO', repo):
+                [line] = cc.check_repo(False)
+            self.assertRegex(line, r'^upstream fetch failed \(.+\)$')
+
+    def test_fork_branch_that_upstream_lacks_reports_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'checkout', '-q', '-b', 'fix-x')
+            self.git('-C', str(repo), 'push', '-q', '-u', 'origin', 'fix-x')
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+
+    def test_clone_without_upstream_remote_skips_the_fork_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = Path(tmp) / 'source', Path(tmp) / 'repo'
+            self.git('init', '-q', '-b', 'main', str(source))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+            self.git('clone', '-q', str(source), str(repo))
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False), [])
+
+    def test_branch_tracking_upstream_reports_drift_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = Path(tmp) / 'source', Path(tmp) / 'repo'
+            self.git('init', '-q', '-b', 'main', str(source))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'one')
+            self.git('clone', '-q', '-o', 'upstream', str(source), str(repo))
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, git pull then install'])
+
+    def test_branch_tracking_a_local_branch_checks_upstream_for_that_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, repo = self.fork(Path(tmp))
+            self.git('-C', str(repo), 'checkout', '-q', '-b', 'topic')
+            self.git('-C', str(repo), 'branch', '-q', '--set-upstream-to=main')
+            self.git('-C', str(source), 'commit', '--allow-empty', '-qm', 'two')
+            with patch.object(cc, 'REPO', repo):
+                self.assertEqual(cc.check_repo(False),
+                                 ['1 commit(s) behind upstream/main, merge it then install'])
+
+
 class VendorTests(unittest.TestCase):
     def test_content_shared_and_target_layers_and_failed_vendor(self):
         with tempfile.TemporaryDirectory() as tmp:

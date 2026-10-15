@@ -24,6 +24,13 @@ existing commands and hooks. `vendor` updates the shared sources for both.
 | Skills | `~/.claude/skills/` | `~/.agents/skills/` |
 | Settings | `~/.claude/settings.json` | `~/.codex/config.toml` |
 | Startup drift check | inside settings | `~/.codex/hooks.json` |
+| Backslash guard (`hooks/heredoc_guard.py`) | inside settings, Windows only | — |
+
+On Windows the Bash tool turns every `\\` into `\`, in a heredoc as well as in
+quotes and arguments, which silently corrupts string literals, regexes and
+paths. There the guard refuses a Bash command that has a double backslash and
+points to the Write and Edit tools instead. A shell pre-check starts the guard
+only for a command with `\\`. Other systems do not get the guard.
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override the respective configuration roots.
 `CODEX_SKILLS_DIR` overrides this installer's Codex skill destination for testing
@@ -36,7 +43,8 @@ files at managed instruction and skill paths are replaced. Claude's existing
 manifest remains valid.
 
 `check` reports repository, installed-file, attribution, and upstream drift.
-It applies no updates; `--daily` throttles each runtime separately to once per
+In a fork with a remote named `upstream`, it also reports commits on that
+remote's branch that are not merged yet. It applies no updates; `--daily` throttles each runtime separately to once per
 calendar day, and `--local-only` skips network checks. Startup hooks run the
 check with the appropriate target. **After installing Codex, review and trust
 its hook with `/hooks`**; Codex requires review again when the hook changes.
