@@ -22,6 +22,7 @@
 ## Re-documentation projects
 
 - A folder with a `redoc.config.json` is a re-documentation project. Before you write a script in one, decide where it lives: a script a second redoc project would run unchanged goes into `~/devel/redoc-tools` and is committed there; a script that names this project's items, sources, people or findings goes into the project's `tools/`. The toolbox README ("What is here and what is not") holds the full rule; a toolbox script finds the project through `lib/project.js` and the bundles through `lib/bundles.js`.
+- Before text goes into an Aligned Elements item of a redoc project, by register, script or by hand, read `~/devel/redoc-tools/AE-ITEM-TEXT.md`: the text rules of all redoc projects (content only, no local knowledge, open points and legacy weaknesses as comments, notes and sources, figures, the level of a requirement).
 
 ## Secrets
 
