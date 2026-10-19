@@ -205,6 +205,18 @@ class SettingsTests(unittest.TestCase):
                 self.assertEqual('PreToolUse' in settings, windows)
 
 
+    def test_home_is_the_profile_folder_on_windows_only(self):
+        # A domain profile can set HOMEDRIVE to a network share; Git Bash then makes ~ a folder of backups.
+        for windows in (True, False):
+            with self.subTest(windows=windows), patch.object(cc, 'WINDOWS', windows), \
+                    tempfile.TemporaryDirectory() as tmp:
+                env = json.loads(cc.render_settings(Path(tmp)).decode()).get('env', {})
+                if windows:
+                    self.assertEqual(env.get('HOME'), Path.home().as_posix())
+                else:
+                    self.assertNotIn('HOME', env)
+
+
 class RepoCheckTests(unittest.TestCase):
     def git(self, *args):
         subprocess.run(['git', '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',

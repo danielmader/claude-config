@@ -529,6 +529,10 @@ def render_settings(cfg: Path) -> bytes:
     planned = json.loads(text)
     if not WINDOWS:
         drop_hook(planned["hooks"], "PreToolUse", "heredoc_guard.py")
+    else:
+        # Without HOME, Git Bash takes HOMEDRIVE + HOMEPATH, which a domain profile can point at a
+        # network share of backups; ~ then reaches stale copies without an error.
+        planned.setdefault("env", {})["HOME"] = Path.home().as_posix()
     installed = read_json(cfg / "settings.json")
     for key in SETTINGS_LOCAL_KEYS:
         if key in installed:
