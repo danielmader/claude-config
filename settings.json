@@ -21,7 +21,7 @@
   "agentPushNotifEnabled": true,
   "enableAllProjectMcpServers": true,
   "env": {
-    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-opus-5-5"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5-5"
   },
   "permissions": {
     "defaultMode": "auto",
