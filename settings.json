@@ -16,7 +16,8 @@
   "switchModelsOnFlag": false,
   "autoMemoryEnabled": false,
   "skillOverrides": {
-    "unslop": "user-invocable-only"
+    "unslop": "user-invocable-only",
+    "dashboard": "off"
   },
   "agentPushNotifEnabled": true,
   "remoteControlAtStartup": true,
