@@ -19,6 +19,7 @@
     "unslop": "user-invocable-only"
   },
   "agentPushNotifEnabled": true,
+  "remoteControlAtStartup": true,
   "enableAllProjectMcpServers": true,
   "env": {
     "CLAUDE_CODE_SUBAGENT_MODEL": "claude-sonnet-5-5"
@@ -31,6 +32,7 @@
       "Write(**)",
       "mcp__aligned-elements",
       "mcp__roxtra-mcp",
+      "WebSearch",
       "Bash(cat *)",
       "Bash(head *)",
       "Bash(tail *)",
