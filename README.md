@@ -22,15 +22,34 @@ existing commands and hooks. `vendor` updates the shared sources for both.
 | --- | --- | --- |
 | Global instructions | `~/.claude/CLAUDE.md` | `~/.codex/AGENTS.md` |
 | Skills | `~/.claude/skills/` | `~/.agents/skills/` |
+| Rules (`rules/` and sources) | `~/.claude/rules/` | appended to `~/.codex/AGENTS.md` |
 | Settings | `~/.claude/settings.json` | `~/.codex/config.toml` |
 | Startup drift check | inside settings | `~/.codex/hooks.json` |
-| Backslash guard (`hooks/heredoc_guard.py`) | inside settings, Windows only | — |
+| Bash guard (`hooks/heredoc_guard.py`) | inside settings | — |
+| Model guard (`hooks/model_guard.py`) | inside settings | — |
+| Usage-limit continue (`hooks/usage_limit_continue.py`) | inside settings, opt-in | — |
 
-On Windows the Bash tool turns every `\\` into `\`, in a heredoc as well as in
-quotes and arguments, which silently corrupts string literals, regexes and
-paths. There the guard refuses a Bash command that has a double backslash and
-points to the Write and Edit tools instead. A shell pre-check starts the guard
-only for a command with `\\`. Other systems do not get the guard.
+The guard refuses two kinds of Bash command:
+
+- A heredoc whose delimiter is unquoted and whose body holds a backtick or `$(`.
+  The shell runs those spans, so Markdown fed to `gh` that way runs the commands
+  its code spans name. The refusal says to quote the delimiter (`<<'EOF'`).
+- On Windows only, a command with a double backslash. There the Bash tool turns
+  every `\\` into `\`, in a heredoc as well as in quotes and arguments, which
+  silently corrupts string literals, regexes and paths. The refusal points to the
+  Write and Edit tools instead.
+
+A shell pre-check starts the guard only for a command with `<<` or `\\`.
+
+Claude Code does not continue a task on its own after a usage limit resets in
+the sessions that `claude remote-control` serves. To make those sessions
+continue on a machine, turn the hook on in the [machine config](#machine-config)
+and install. The hook waits until the reset and wakes the session. It skips a
+reset more than 24 hours away, such as a weekly limit. It runs in every session
+on that machine, and stays quiet when the session has moved on by the time it
+wakes. So a terminal session that you stopped with Esc during Claude Code's own
+wait still continues 2 minutes after the reset.
+[Wait for a usage limit to reset](https://code.claude.com/docs/en/interactive-mode.md#wait-for-a-usage-limit-to-reset)
 
 `CLAUDE_CONFIG_DIR` and `CODEX_HOME` override the respective configuration roots.
 `CODEX_SKILLS_DIR` overrides this installer's Codex skill destination for testing
@@ -49,6 +68,99 @@ calendar day, and `--local-only` skips network checks. Startup hooks run the
 check with the appropriate target. **After installing Codex, review and trust
 its hook with `/hooks`**; Codex requires review again when the hook changes.
 [Codex hook documentation](https://learn.chatgpt.com/docs/hooks)
+
+### Machine config
+
+Settings that differ between machines live in `~/.config/claude-config/config.toml`
+(`$XDG_CONFIG_HOME/claude-config/config.toml` when that is set), outside the repo.
+A source can be a private repo, and naming it here would publish it. With no file,
+nothing changes.
+
+```toml
+[review]
+default = "subagent"            # copilot, subagent, claude or codex
+
+[vars]
+share_scratch = "/data/claude"  # fills {{share_scratch}} in rule files
+
+[vault]
+inputs = ["calendar", "github"]  # outside inputs the vault brief and wrap read
+
+[hooks]
+usage_limit_continue = true     # opt-in Claude hooks, off by default
+
+[models.claude]
+min_effort = "medium"             # no choice goes below this ...
+max_effort = "xhigh"              # ... or above this, which also caps Claude's maxEffortLevel
+
+[models.claude.limits]
+haiku = { max_effort = "medium" } # per-model bounds inside those
+
+[models.claude.tasks.review]
+default = "sonnet@medium"
+allowed = ["opus@high"]
+
+[models.codex.tasks.review]
+default = "default@medium"        # default: the model in Codex's own config
+
+[[sources]]
+repo = "git@github.com:<owner>/<my-rules>.git"
+rules = "all"
+skills = "all"
+
+[[sources]]
+repo = "git@github.com:<owner>/<colleague-config>.git"
+ref = "main"                    # optional, defaults to the remote's default branch
+skills = ["some-skill", "another-skill"]
+```
+
+- `review.default` adds a line to both runtimes' global instructions. `issue-to-pr`
+  and `review-loop` take it as their reviewer when no `--reviewer` is given.
+- A source is a repo with `rules/` and `skills/<name>/SKILL.md` folders. It
+  installs only what `rules` and `skills` pick, each `"all"` or a list of names; a
+  rule's name is its path under `rules/` without `.md`. A source that picks nothing
+  or has neither folder is an error, and so is a name the source lacks or a file or skill that two places
+  provide. `install` clones or fetches each source into `.cache/`. Source skills
+  install as they are, without this repo's patches.
+- `[vault] inputs` lists the outside inputs the vault `brief` and `wrap` read on
+  this machine. The vault template's `vault-rules.md` names the inputs they know.
+- `[hooks]` turns on Claude hooks that most machines don't need. Each
+  installs into `settings.json` only when set to `true`. The one hook so far is
+  `usage_limit_continue`, described under [Install and check](#install-and-check).
+- `[models]` sets, per runtime and per task kind (`explore`, `audit`, `implement`,
+  `review`, `design`, `judgment`), the model and effort a subagent starts on
+  (`default`) and the other choices an agent picks from, stronger or smaller,
+  by how complex, consequential or open-ended the work is (`allowed`). Each is `model@effort`; Claude takes the aliases `opus`, `sonnet`,
+  `haiku` and `fable`. A task's `models` list restricts its choices; the built-in
+  `design` and `judgment` take only `opus`, and keep that when the config changes
+  their default. Built-in defaults fill every task kind and bound the config
+  leaves out, and a choice outside its bounds is an error.
+- Install renders the result as a Models section in both runtimes' instructions:
+  the prose and task kinds come from `instructions/models.md`, and `cc.py` fills
+  in the table, the bounds and the cross-model line,
+  with the other runtime's `review` entry for `review-loop --reviewer
+  claude|codex`. A subagent that fits no kind inherits its parent's model and
+  effort. On Claude, `max_effort` becomes `maxEffortLevel` in `settings.json`,
+  which caps every request including the main session's, and
+  `hooks/model_guard.py` refuses an `Agent` call whose model or effort is outside
+  the table. `CLAUDE_CODE_EFFORT_LEVEL` in the environment overrides every
+  Claude effort.
+- `{{name}}` in a Markdown rule becomes the `[vars]` value of that name, or `none`
+  when it is not set.
+- Claude Code gets the rules in `~/.claude/rules/`. Codex has no path-scoped rules,
+  so each rule is appended to `AGENTS.md` with its frontmatter shown as written,
+  and a line saying it applies only to files matching the `paths` globs there.
+- `check` reads the cached clones, so `--local-only` stays offline. Without it,
+  `check` also reports a source with commits the cache lacks.
+
+## Vault
+
+The skills under `skills/vault/` keep a private markdown vault of projects,
+tasks, and research notes in its own git repo at `$VAULT_DIR` (default
+`~/vault`). Ask Claude to set up a vault: the `setup-vault` skill creates one
+from the template in `skills/vault/setup-vault/assets/vault/`, whose rules fix
+the note formats every vault skill reads. The same skill updates an existing
+vault when the template changes.
 
 ## Instructions and settings
 
@@ -74,6 +186,28 @@ agent to read `$CODEX_HOME/local-instructions.md` if present (default
 `~/.codex/local-instructions.md`). That file is not managed. Write file scopes
 as explicit conditions there; Claude `paths:` rules are not converted.
 
+### Owned remotes
+
+Outside the vault, every push and every write on a remote needs your approval in the
+turn it happens. To let agents push feature branches and open, update, and
+answer issues and PRs on your own repos without that, list those repos in
+`~/.claude/rules/owned-remotes.md` for Claude and `~/.codex/owned-remotes.md`
+for Codex. No other file counts, so a list an agent happens to read elsewhere
+grants nothing. You edit these files by hand: agents are told never to touch
+them, and Claude's settings deny `Edit` on `rules/owned-remotes.md`. The
+installer does not manage either file. Merging and pushing
+to the default branch still need approval each time. The entry format and the
+full rules are under "Owned remotes" in `instructions/shared.md`.
+
+Claude's auto mode trusts only the current repo's remotes by default, so
+`install` also adds the list to `autoMode.environment` in `settings.json`.
+It leaves out `(private)` entries: the classifier cannot check a repo's
+visibility, so it would trust public repos under them too. Auto mode still
+blocks writes to those repos from any other repo you work in.
+Re-run `install` after you edit `owned-remotes.md`; until then, `check`
+reports `settings.json` drift.
+[Auto mode configuration](https://code.claude.com/docs/en/auto-mode-config)
+
 ## Claude permission rules
 
 Write Bash permission rules in space form — `Bash(uv run pytest *)`, not
@@ -94,7 +228,9 @@ checks `Write(...)` path rules; `Edit` rules govern writes.
 
 ## Editing and updating skills
 
-Edit shared skills under `skills/`, then reinstall the desired target. For a
+Edit shared skills under `skills/`, then reinstall the desired target. A folder
+there without a `SKILL.md`, such as `skills/vault/`, only groups skills in this
+repo: installation places each skill in it at the top level. For a
 vendored skill, also record the edit in the appropriate patch so re-vendoring
 preserves it. Patches use paths relative to the skill directory:
 

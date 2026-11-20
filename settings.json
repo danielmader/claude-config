@@ -99,7 +99,10 @@
       "Read(~/.ssh/**)",
       "Read(~/.npmrc)",
       "Read(~/.claude/.credentials.json)",
-      "Bash(cmdkey *)"
+      "Bash(cmdkey *)",
+      "Bash(find / *)",
+      "Bash(bfs / *)",
+      "Edit(//**/rules/owned-remotes.md)"
     ]
   },
   "deniedMcpServers": [
@@ -126,13 +129,36 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{UV}}\" run --script \"{{REPO}}/hooks/usage_limit_continue.py\"",
+            "asyncRewake": true,
+            "timeout": 90000
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
         "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "input=$(cat); b=$(printf '\\134'); case \"$input\" in *\"$b$b$b$b\"*) printf '%s' \"$input\" | \"{{UV}}\" run --script \"{{REPO}}/hooks/heredoc_guard.py\" ;; esac",
+            "command": "input=$(cat); b=$(printf '\\134'); case \"$input\" in *\"$b$b$b$b\"*|*\"<<\"*) printf '%s' \"$input\" | \"{{UV}}\" run --script \"{{REPO}}/hooks/heredoc_guard.py\" ;; esac",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"{{UV}}\" run --script \"{{REPO}}/hooks/model_guard.py\"",
             "timeout": 30
           }
         ]

@@ -139,10 +139,18 @@ def verbatim(dest: Path) -> bool:
     return all(c in have for c in CLONE_CONFIG)
 
 
-def clone(repo: str, ref: str) -> Path:
+def cache_path(repo: str, ref: str | None = None) -> Path:
+    """Vendoring keys its clone by repo. A source keys its own by repo and ref, so two refs of one repo,
+    or a source on a vendored repo, never move each other's checkout."""
+    if ref is None:
+        return CACHE / hashlib.sha256(repo.encode()).hexdigest()[:12]
+    return CACHE / "sources" / hashlib.sha256(f"{repo}\n{ref}".encode()).hexdigest()[:12]
+
+
+def clone(repo: str, ref: str, dest: Path | None = None) -> Path:
     """Shallow clone into the cache, or update an existing one."""
-    CACHE.mkdir(exist_ok=True)
-    dest = CACHE / hashlib.sha256(repo.encode()).hexdigest()[:12]
+    dest = cache_path(repo) if dest is None else dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
     # Setting the config leaves a checkout made before it untouched, endings
     # and all, so such a cache has to go.
     if dest.exists() and not verbatim(dest):
@@ -152,8 +160,8 @@ def clone(repo: str, ref: str) -> Path:
         run(["git", "-C", str(dest), "checkout", "--quiet", "--force", "FETCH_HEAD"])
     else:
         config = [arg for c in CLONE_CONFIG for arg in ("--config", c)]
-        run(["git", "clone", *config, "--depth", "1", "--branch", ref, "--quiet",
-             repo, str(dest)])
+        branch = [] if ref == "HEAD" else ["--branch", ref]
+        run(["git", "clone", *config, "--depth", "1", *branch, "--quiet", repo, str(dest)])
     return dest
 
 
@@ -403,40 +411,389 @@ def cmd_vendor(args) -> int:
     return 0
 
 
-def render_instructions(target: str) -> bytes:
+REVIEWERS = ("copilot", "subagent", "claude", "codex")
+# Claude hooks in settings.json that install only where [hooks] turns them on, by name and the event they run on.
+OPT_IN_HOOKS = {"usage_limit_continue": "StopFailure"}
+
+
+# The task kinds a policy sets. instructions/models.md describes each one.
+TASKS = ("explore", "audit", "implement", "review", "design", "judgment")
+# Effort levels each runtime documents. Claude Code's Agent call takes only these model aliases.
+EFFORTS = {"claude": ("low", "medium", "high", "xhigh", "max"),
+           "codex": ("low", "medium", "high", "xhigh", "max", "ultra")}
+CLAUDE_MODELS = ("opus", "sonnet", "haiku", "fable")
+# Codex's model ids differ between accounts, so its built-ins use `default`: the model in Codex's own config.
+BUILT_IN_MODELS = {
+    "claude": {
+        "min_effort": "medium", "max_effort": "xhigh",
+        "limits": {"haiku": {"max_effort": "medium"}},
+        "tasks": {
+            "explore": {"default": "haiku@medium", "allowed": ["sonnet@medium"]},
+            "audit": {"default": "sonnet@medium", "allowed": ["haiku@medium", "sonnet@high", "opus@medium"]},
+            "implement": {"default": "sonnet@medium",
+                          "allowed": ["haiku@medium", "sonnet@high", "opus@medium", "opus@high"]},
+            "review": {"default": "sonnet@medium", "allowed": ["haiku@medium", "sonnet@high", "opus@high"]},
+            "design": {"default": "opus@medium", "allowed": ["opus@high", "opus@xhigh"], "models": ["opus"]},
+            "judgment": {"default": "opus@medium", "allowed": ["opus@high", "opus@xhigh"], "models": ["opus"]},
+        },
+    },
+    "codex": {
+        "min_effort": "medium", "max_effort": "xhigh",
+        "limits": {},
+        "tasks": {
+            "explore": {"default": "default@medium", "allowed": []},
+            "audit": {"default": "default@medium", "allowed": ["default@high"]},
+            "implement": {"default": "default@medium", "allowed": ["default@high", "default@xhigh"]},
+            "review": {"default": "default@medium", "allowed": ["default@high"]},
+            "design": {"default": "default@high", "allowed": ["default@xhigh"]},
+            "judgment": {"default": "default@high", "allowed": ["default@xhigh"]},
+        },
+    },
+}
+
+
+def machine_config_path() -> Path:
+    base = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(base).expanduser() if base else Path.home() / ".config") / "claude-config" / "config.toml"
+
+
+def selection(value, path: Path, key: str) -> list[str] | str:
+    if value == "all" or (isinstance(value, list) and all(isinstance(v, str) for v in value)):
+        return value
+    raise ValueError(f"{path}: {key} is \"all\" or a list of names")
+
+
+def model_policy(models: dict, path: Path) -> dict:
+    """The built-in policy with this machine's [models] laid over it. A task kind replaces its built-in entry
+    except for a built-in models list, a model's limits replace its built-in limits, and min_effort and max_effort bound every effort.
+    Every choice must fit the bounds, its model's limits, and its task's models when the task names them."""
+    if not isinstance(models, dict) or set(models) - set(EFFORTS):
+        raise ValueError(f"{path}: [models] takes {' and '.join(EFFORTS)} tables")
+    policy = {}
+    for runtime, built_in in BUILT_IN_MODELS.items():
+        given = models.get(runtime, {})
+        if not isinstance(given, dict) or set(given) - {"min_effort", "max_effort", "limits", "tasks"} \
+                or not all(isinstance(given.get(k, {}), dict) for k in ("limits", "tasks")):
+            raise ValueError(f"{path}: [models.{runtime}] takes min_effort, max_effort, limits and tasks")
+        levels = EFFORTS[runtime]
+        rank = levels.index
+
+        def bounds(where: str, bound: dict) -> None:
+            if any(v not in levels for v in bound.values()) \
+                    or rank(bound.get("min_effort", levels[0])) > rank(bound.get("max_effort", levels[-1])):
+                raise ValueError(f"{path}: {where} takes min_effort and max_effort, in order, from {', '.join(levels)}")
+
+        floor = {k: given.get(k, built_in[k]) for k in ("min_effort", "max_effort")}
+        bounds(f"[models.{runtime}]", floor)
+        limits = {**built_in["limits"], **given.get("limits", {})}
+        def known(model: str, where: str) -> None:
+            # A misspelled Claude model would match no choice and silently never apply.
+            if runtime == "claude" and model not in CLAUDE_MODELS:
+                raise ValueError(f"{path}: {where} names {model!r}, not one of {', '.join(CLAUDE_MODELS)}")
+
+        for model, bound in limits.items():
+            known(model, f"models.{runtime}.limits")
+            if not isinstance(bound, dict) or set(bound) - {"min_effort", "max_effort"}:
+                raise ValueError(f"{path}: models.{runtime}.limits.{model} takes min_effort and max_effort")
+            bounds(f"models.{runtime}.limits.{model}", bound)
+        tasks = {**built_in["tasks"], **given.get("tasks", {})}
+        for kind, task in tasks.items():
+            where = f"{path}: models.{runtime}.tasks.{kind}"
+            if kind not in TASKS:
+                raise ValueError(f"{where} is not a task kind; the kinds are {', '.join(TASKS)}")
+            if not isinstance(task, dict) or "default" not in task or set(task) - {"default", "allowed", "models"} \
+                    or not all(isinstance(task.get(k, []), list) for k in ("allowed", "models")):
+                raise ValueError(f"{where} needs default, and may set allowed and models, each a list")
+            # A built-in models list stays unless the config sets its own: it keeps judgment and design on
+            # strong models when the config only changes their default.
+            kept = {"models": built_in["tasks"][kind]["models"]} if "models" in built_in["tasks"].get(kind, {}) else {}
+            task = {"allowed": [], **kept, **task}
+            tasks[kind] = task
+            for model in task.get("models", []):
+                known(model, f"models.{runtime}.tasks.{kind}.models")
+            for choice in [task["default"], *task["allowed"]]:
+                model, _, effort = choice.partition("@") if isinstance(choice, str) else ("", "", "")
+                if not model or effort not in levels or (runtime == "claude" and model not in CLAUDE_MODELS):
+                    hint = f"model one of {', '.join(CLAUDE_MODELS)}" if runtime == "claude" else "a model id or default"
+                    raise ValueError(f"{where}: {choice!r} is not model@effort, with {hint} "
+                                     f"and effort one of {', '.join(levels)}")
+                if "models" in task and model not in task["models"]:
+                    raise ValueError(f"{where}: {choice} uses {model}, and {kind} takes only {', '.join(task['models'])}")
+                for scope, bound in ((f"models.{runtime}", floor), (f"the {model} limit", limits.get(model, {}))):
+                    if "min_effort" in bound and rank(effort) < rank(bound["min_effort"]):
+                        raise ValueError(f"{where}: {choice} is below {scope} min_effort = {bound['min_effort']}")
+                    if "max_effort" in bound and rank(effort) > rank(bound["max_effort"]):
+                        raise ValueError(f"{where}: {choice} is above {scope} max_effort = {bound['max_effort']}")
+        policy[runtime] = {**floor, "limits": limits, "tasks": tasks}
+    return policy
+
+
+def machine_config() -> dict:
+    """This machine's settings. They live outside the repo, so the public repo never names a private source."""
+    path = machine_config_path()
+    if not path.exists():
+        return {"review": {}, "vars": {}, "vault": {}, "hooks": {}, "sources": [],
+                "models": model_policy({}, path)}
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{path}: {e}") from e
+    unknown = set(data) - {"review", "vars", "vault", "hooks", "sources", "models"}
+    if unknown:
+        raise ValueError(f"{path}: unknown key(s) {', '.join(sorted(unknown))}")
+    for key in ("review", "vars", "vault", "hooks"):
+        if not isinstance(data.get(key, {}), dict):
+            raise ValueError(f"{path}: {key} is a table, [{key}]")
+    if not isinstance(data.get("sources", []), list) or not all(isinstance(s, dict) for s in data.get("sources", [])):
+        raise ValueError(f"{path}: sources is a list of tables, [[sources]]")
+    review = data.get("review", {})
+    if set(review) - {"default"} or review.get("default", "subagent") not in REVIEWERS:
+        raise ValueError(f"{path}: [review] takes only default, one of {', '.join(REVIEWERS)}")
+    variables = data.get("vars", {})
+    if not all(isinstance(v, str) for v in variables.values()):
+        raise ValueError(f"{path}: every [vars] value is a string")
+    # The vault skills read [vault]; vault-rules.md names the inputs they know.
+    vault = data.get("vault", {})
+    inputs = vault.get("inputs", [])
+    if set(vault) - {"inputs"} or not isinstance(inputs, list) or not all(isinstance(i, str) for i in inputs):
+        raise ValueError(f"{path}: [vault] takes only inputs, a list of names")
+    hooks = data.get("hooks", {})
+    if set(hooks) - set(OPT_IN_HOOKS) or not all(isinstance(v, bool) for v in hooks.values()):
+        raise ValueError(f"{path}: [hooks] takes only {', '.join(OPT_IN_HOOKS)}, each true or false")
+    sources = data.get("sources", [])
+    for source in sources:
+        if not isinstance(source.get("repo"), str) or set(source) - {"repo", "ref", "rules", "skills"}:
+            raise ValueError(f"{path}: each [[sources]] needs repo, and may set ref, rules and skills")
+        source.setdefault("ref", "HEAD")
+        if not isinstance(source["ref"], str):
+            raise ValueError(f"{path}: ref of source {source['repo']} is a string")
+        source["rules"] = selection(source.get("rules", []), path, "rules")
+        source["skills"] = selection(source.get("skills", []), path, "skills")
+        if not source["rules"] and not source["skills"]:
+            raise ValueError(f"{path}: source {source['repo']} picks nothing; set rules or skills")
+    return {"review": review, "vars": variables, "vault": vault, "hooks": hooks, "sources": sources,
+            "models": model_policy(data.get("models", {}), path)}
+
+
+def source_checkouts(fetch: bool = False) -> list[tuple[dict, Path]]:
+    """Each configured source with its cached clone. Without fetch, nothing touches the network."""
+    out = []
+    for source in machine_config()["sources"]:
+        dest = cache_path(source["repo"], source["ref"])
+        if fetch:
+            clone(source["repo"], source["ref"], dest)
+        if not dest.exists():
+            raise RuntimeError(f"source {source['repo']} is not cloned yet, run install")
+        if not (dest / "rules").is_dir() and not (dest / "skills").is_dir():
+            raise RuntimeError(f"source {source['repo']} has neither rules/ nor skills/")
+        out.append((source, dest))
+    return out
+
+
+def pick(available: dict, wanted: list[str] | str, what: str, repo: str) -> dict:
+    if wanted == "all":
+        return available
+    missing = [name for name in wanted if name not in available]
+    if missing:
+        raise RuntimeError(f"{repo} has no {what} {', '.join(missing)}")
+    return {name: available[name] for name in wanted}
+
+
+VAR = re.compile(r"\{\{([A-Za-z_][A-Za-z0-9_]*)\}\}")
+
+
+def rule_files(checkouts: list[tuple[dict, Path]]) -> dict[str, bytes]:
+    """Every rule file to install, keyed by its path under rules/: this repo's, then each source's picks.
+    `{{name}}` in a Markdown rule becomes the config's [vars] value, or `none` when it is not set."""
+    out: dict[str, bytes] = {}
+    origin: dict[str, str] = {}
+
+    def files(root: Path) -> dict[str, Path]:
+        return {f.relative_to(root).as_posix(): f for f in sorted(root.rglob("*"))
+                if f.is_file() and f.name != ".gitkeep"} if root.is_dir() else {}
+
+    def add(found: dict[str, Path], name: str) -> None:
+        for rel, f in found.items():
+            if rel in out:
+                raise RuntimeError(f"rules/{rel} comes from both {origin[rel]} and {name}")
+            out[rel], origin[rel] = f.read_bytes(), name
+
+    add(files(RULES), "this repo")
+    for source, dest in checkouts:
+        by_name = {rel.removesuffix(".md"): (rel, f) for rel, f in files(dest / "rules").items()}
+        add(dict(pick(by_name, source["rules"], "rule", source["repo"]).values()), source["repo"])
+    variables = machine_config()["vars"]
+    for rel, data in out.items():
+        if rel.endswith(".md"):
+            out[rel] = VAR.sub(lambda m: variables.get(m.group(1), "none"), data.decode("utf-8")).encode()
+    return out
+
+
+FRONTMATTER = re.compile(r"---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.DOTALL)
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
+    """A rule file's frontmatter as written, and its body. Only the delimiters are read: the YAML passes to
+    Codex unparsed, because every hand-parsed subset of it misread some valid form."""
+    m = FRONTMATTER.match(text)
+    return (m.group(1), text[m.end():]) if m else ("", text)
+
+
+def codex_rules(rules: dict[str, bytes]) -> list[str]:
+    """Codex has no path-scoped rules, so each file joins AGENTS.md with its frontmatter shown as the scope."""
+    parts = []
+    for rel, data in sorted(rules.items()):
+        if not rel.endswith(".md"):
+            continue
+        front, body = split_frontmatter(data.decode("utf-8"))
+        if front:
+            scope = (f"_From rules/{rel}, scoped by its frontmatter:_\n\n```yaml\n{front}\n```\n\n"
+                     "_It applies only to files matching the `paths` globs there, and everywhere when there are none._")
+        else:
+            scope = f"_From rules/{rel}, applies everywhere._"
+        parts.append(f"{scope}\n\n{body.strip()}")
+    return parts
+
+
+def choices(entries: list[str]) -> str:
+    return ", ".join(f"`{m}` at `{e}`" for m, _, e in (c.partition("@") for c in entries))
+
+
+def render_models(target: str, policy: dict) -> str:
+    """instructions/models.md for one runtime: its table and bounds, and the other runtime's review entry for
+    cross-model review."""
+    other = "codex" if target == "claude" else "claude"
+    own = policy[target]
+    review = policy[other]["tasks"]["review"]
+    review_choices = (f"{choices([review['default']])}, also allowed "
+                      f"{choices(review['allowed']) or 'nothing else'}")
+    if other == "codex":
+        cross = ("A `--reviewer codex` round runs `codex exec -m <model> -c model_reasoning_effort=<effort>` with "
+                 f"a choice from Codex's review row: {review_choices}. A model of `default` means leaving `-m` off, "
+                 "so Codex uses its own configured model.")
+    else:
+        cross = ("A `--reviewer claude` round runs `claude -p --model <model> --effort <effort>` with a choice from "
+                 f"Claude's review row: {review_choices}.")
+    fills = {
+        "spawn": ("pass its `model` and `effort` on the `Agent` call" if target == "claude"
+                  else "give it that model and reasoning effort when you start it"),
+        "min_effort": own["min_effort"],
+        "max_effort": own["max_effort"],
+        "runtime_note": ("\n\n`CLAUDE_CODE_EFFORT_LEVEL`, when set in the environment, overrides every effort "
+                         "below. A hook refuses an `Agent` call whose model or effort is outside this table."
+                         if target == "claude" else
+                         "\n\nA model of `default` means leaving the model unset, so the subagent runs Codex's "
+                         "configured model; set only its reasoning effort."),
+        "rows": "\n".join(f"| {kind} | {choices([t['default']])} | {choices(t['allowed']) or '—'} |"
+                          for kind, t in own["tasks"].items()),
+        "cross": cross,
+    }
+    text = (REPO / "instructions" / "models.md").read_text(encoding="utf-8").strip()
+    text = re.sub(r"\{\{(\w+)\}\}", lambda m: fills[m.group(1)], text)
+    return text
+
+
+def model_guard_policy(policy: dict) -> bytes:
+    """What hooks/model_guard.py checks an Agent call against: Claude's bounds and every listed choice."""
+    claude = policy["claude"]
+    listed = sorted({tuple(c.split("@")) for t in claude["tasks"].values() for c in [t["default"], *t["allowed"]]})
+    return (json.dumps({"levels": list(EFFORTS["claude"]), "min_effort": claude["min_effort"],
+                        "max_effort": claude["max_effort"], "choices": [list(c) for c in listed]},
+                       indent=2) + "\n").encode()
+
+
+def render_instructions(target: str, rules: dict[str, bytes] | None = None) -> bytes:
     base = REPO / "instructions"
-    return ("\n\n".join((base / name).read_text(encoding="utf-8").strip()
-                        for name in ("shared.md", f"{target}.md")) + "\n").encode()
+    parts = [(base / name).read_text(encoding="utf-8").strip() for name in ("shared.md", f"{target}.md")]
+    config = machine_config()
+    reviewer = config["review"].get("default")
+    if reviewer:
+        parts.append(f"## This machine\n\nDefault reviewer for `issue-to-pr` and `review-loop`: `{reviewer}`. "
+                     "A `--reviewer` argument overrides it.")
+    parts.append(render_models(target, config["models"]))
+    if target == "codex" and rules:
+        parts += codex_rules(rules)
+    return ("\n\n".join(parts) + "\n").encode()
 
 
-def skill_files(target: str) -> dict[str, bytes]:
+def skill_dirs(root: Path | None = None) -> list[Path]:
+    """Every skill under skills/. A folder without a SKILL.md groups skills in
+    this repo only; installation places each skill in it at the top level."""
+    root = SKILLS if root is None else root
+    if not root.is_dir():
+        return []
+    found: dict[str, Path] = {}
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        members = [entry] if (entry / "SKILL.md").exists() else sorted(
+            d for d in entry.iterdir() if (d / "SKILL.md").exists())
+        for skill in members:
+            if skill.name in found:
+                raise RuntimeError(f"skill {skill.name} is in both {found[skill.name]} and {skill}")
+            found[skill.name] = skill
+    return sorted(found.values(), key=lambda d: d.name)
+
+
+SKILL_MODEL = re.compile(r"\{\{(model|effort):([a-z]+)\}\}")
+
+
+def fill_skill_models(text: str, tasks: dict) -> str:
+    """`{{model:<kind>}}` and `{{effort:<kind>}}` in a skill become that task kind's default, so frontmatter
+    such as dispatch's follows the installed policy."""
+    def fill(m: re.Match) -> str:
+        if m.group(2) not in tasks:
+            raise RuntimeError(f"skill placeholder {m.group(0)} names no task kind")
+        model, _, effort = tasks[m.group(2)]["default"].partition("@")
+        return model if m.group(1) == "model" else effort
+    return SKILL_MODEL.sub(fill, text)
+
+
+def skill_files(target: str, checkouts: list[tuple[dict, Path]] = ()) -> dict[str, bytes]:
+    """This repo's skills with their compat patches and the policy filled in, then each source's picks as
+    they are."""
     out = {}
+    tasks = machine_config()["models"][target]["tasks"]
     with tempfile.TemporaryDirectory() as tmp:
-        for source in sorted(SKILLS.iterdir()):
-            if not source.is_dir():
-                continue
+        for source in skill_dirs():
             stage = Path(tmp) / source.name
             shutil.copytree(source, stage)
             apply_patch(source.name, stage, f"compat/{target}")
             for f in sorted(stage.rglob("*")):
                 if f.is_file():
-                    out[f"{source.name}/{f.relative_to(stage).as_posix()}"] = f.read_bytes()
+                    data = f.read_bytes()
+                    if f.name == "SKILL.md":
+                        data = fill_skill_models(data.decode("utf-8"), tasks).encode("utf-8")
+                    out[f"{source.name}/{f.relative_to(stage).as_posix()}"] = data
+    origin = {name: "this repo" for name in {rel.split("/")[0] for rel in out}}
+    for source, dest in checkouts:
+        available = {d.name: d for d in skill_dirs(dest / "skills")}
+        for name, skill in pick(available, source["skills"], "skill", source["repo"]).items():
+            if name in origin:
+                raise RuntimeError(f"skill {name} comes from both {origin[name]} and {source['repo']}")
+            origin[name] = source["repo"]
+            for f in sorted(skill.rglob("*")):
+                if f.is_file():
+                    out[f"{name}/{f.relative_to(skill).as_posix()}"] = f.read_bytes()
     return out
 
 
-def planned_files(cfg: Path, target: str = "claude") -> dict[str, dict[str, bytes]]:
-    skills = skill_files(target)
+def planned_files(cfg: Path, target: str = "claude",
+                  checkouts: list[tuple[dict, Path]] | None = None) -> dict[str, dict[str, bytes]]:
+    if checkouts is None:
+        checkouts = source_checkouts()
+    skills = skill_files(target, checkouts)
+    rules = rule_files(checkouts)
     if target == "codex":
         return {"skills": skills, "config": {
-            "AGENTS.md": render_instructions(target),
+            "AGENTS.md": render_instructions(target, rules),
             "config.toml": render_codex_settings(cfg),
             "hooks.json": render_codex_hooks(cfg),
         }}
     out = {f"skills/{rel}": data for rel, data in skills.items()}
-    for f in sorted(RULES.rglob("*")):
-        if f.is_file() and f.name != ".gitkeep":
-            out[f"rules/{f.relative_to(RULES).as_posix()}"] = f.read_bytes()
+    out.update({f"rules/{rel}": data for rel, data in rules.items()})
     out["CLAUDE.md"] = render_instructions(target)
+    out["model-policy.json"] = model_guard_policy(machine_config()["models"])
     out["settings.json"] = render_settings(cfg)
     return {"config": out}
 
@@ -527,17 +884,40 @@ def render_settings(cfg: Path) -> bytes:
     text = text.replace("{{UV}}", json_escape(uv_executable()))
     text = text.replace("{{REPO}}", json_escape(str(REPO)))
     planned = json.loads(text)
-    if not WINDOWS:
-        drop_hook(planned["hooks"], "PreToolUse", "heredoc_guard.py")
-    else:
+    if WINDOWS:
         # Without HOME, Git Bash takes HOMEDRIVE + HOMEPATH, which a domain profile can point at a
         # network share of backups; ~ then reaches stale copies without an error.
         planned.setdefault("env", {})["HOME"] = Path.home().as_posix()
+    cap = machine_config()["models"]["claude"]["max_effort"]
+    if cap != "max":
+        planned["maxEffortLevel"] = cap
     installed = read_json(cfg / "settings.json")
+    enabled = machine_config()["hooks"]
+    for name, event in OPT_IN_HOOKS.items():
+        if not enabled.get(name):
+            drop_hook(planned["hooks"], event, f"{name}.py")
     for key in SETTINGS_LOCAL_KEYS:
         if key in installed:
             planned[key] = installed[key]
+    # The auto mode classifier trusts only the working repo's remotes by
+    # default; this lets it allow writes to the other owned repos. It cannot
+    # check visibility, so a `(private)` entry would trust public repos too.
+    owned = [r for r in owned_remotes(cfg / "rules" / "owned-remotes.md")
+             if not r.endswith("(private)")]
+    if owned:
+        env = planned.setdefault("autoMode", {}).setdefault("environment", ["$defaults"])
+        env.append("Source control: owned remotes, where the Owned remotes rules in CLAUDE.md "
+                   f"let Claude push its branches and write issues and PRs: {', '.join(owned)}")
     return (json.dumps(planned, indent=2) + "\n").encode("utf-8")
+
+
+def owned_remotes(path: Path) -> list[str]:
+    """Each bullet of the owned-remotes file is one entry."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return [m[1].strip() for line in lines if (m := re.match(r"\s*[-*+]\s+(\S.*)", line))]
 
 
 def drop_hook(hooks: dict, event: str, script: str) -> None:
@@ -620,7 +1000,8 @@ def targets(args) -> tuple[str, ...]:
 def cmd_install(args) -> int:
     # Render every target first, so patch/config failures cannot leave a partial
     # installation across the two runtimes.
-    plans = {t: planned_files(config_dir(t), t) for t in targets(args)}
+    checkouts = source_checkouts(fetch=True)
+    plans = {t: planned_files(config_dir(t), t, checkouts) for t in targets(args)}
     for target, planned in plans.items():
         install_target(target, planned)
     if "codex" in plans:
@@ -757,7 +1138,11 @@ def check_fork(branch: str) -> list[str]:
 def check_local(cfg: Path, target: str = "claude") -> list[str]:
     out = []
     roots = install_roots(target)
-    for label, files in planned_files(cfg, target).items():
+    try:
+        planned = planned_files(cfg, target)
+    except RuntimeError as e:
+        return [str(e)]
+    for label, files in planned.items():
         root = roots[label]
         for rel, data in sorted(files.items()):
             path = safe_path(root, rel)
@@ -799,6 +1184,21 @@ def check_upstream() -> list[str]:
                 out.append(f"{s.name} vanished upstream at {s.path}")
             elif tree_hash(src) != s.content:
                 out.append(f"{s.name} changed upstream, vendor {s.name.split('/')[0]} to review")
+    return out + check_sources()
+
+
+def check_sources() -> list[str]:
+    out = []
+    for source in machine_config()["sources"]:
+        repo, dest = source["repo"], cache_path(source["repo"], source["ref"])
+        try:
+            head = remote_sha(repo, source["ref"])
+        except RuntimeError as e:
+            out.append(f"source {repo} unreachable ({e.args[0].splitlines()[-1]})")
+            continue
+        have = run(["git", "-C", str(dest), "rev-parse", "HEAD"]) if dest.exists() else ""
+        if head and head != have:
+            out.append(f"source {repo} has new commits, run install")
     return out
 
 

@@ -15,9 +15,9 @@ A reviewer that reads the code before it reads your defense of the code. Each ro
 
 ## The grant
 
-An explicit user invocation of `review-loop` (`/review-loop` or `$review-loop`) authorizes exactly one remote write: the step-6 summary note on the named request. Not approving, not merging, not pushing, not a label. Reached from `issue-to-pr`, that skill's grant already covers the note and the loop's pushes.
+An explicit user invocation of `review-loop` (`/review-loop` or `$review-loop`) authorizes exactly one remote write: the step-6 summary note on the named request. Not approving, not merging, not a label. Reached from `issue-to-pr`, that skill's grant already covers the note and the loop's pushes.
 
-So a standalone run leaves its fixes as **local commits**. Pushing them is a fresh ask, and until it happens the note says the fixes are local and absent from the request's diff. A note that credits commits a human cannot find is worse than no note.
+Pushing the fixes depends on the target. A run invoked with a request number pushes each round's commits to the request's head branch in step 4 when the global "Owned remotes" rules allow that push. Those rules go by the repository the push lands on, and for a request from a fork that is the fork. Otherwise, including every run with no argument, a standalone run leaves its fixes as **local commits**: pushing them is a fresh ask, and until it happens the note says the fixes are local and absent from the request's diff. A note that credits commits a human cannot find is worse than no note.
 
 ## 1. Resolve the target
 
@@ -41,7 +41,7 @@ With a number, resolve the forge the way step 0 of the installed `issue-to-pr` s
 
 ## 2. Round loop, budget 3
 
-`--reviewer` picks who reviews. The default, `subagent`, follows [runtime guidance](references/runtime.md). `claude` or `codex` puts another model family on the review and follows [cross-model dispatch](references/cross-model.md); naming the runtime you are running in means `subagent`.
+`--reviewer` picks who reviews. Without it, the reviewer is the default the global instructions name for this machine, and `subagent` when they name none or name `copilot`, which this loop does not run. `subagent` follows [runtime guidance](references/runtime.md). `claude` or `codex` puts another model family on the review and follows [cross-model dispatch](references/cross-model.md); naming the runtime you are running in means `subagent`.
 
 Each round starts **one fresh** reviewer, passing [reviewer.md](reviewer.md) verbatim with its placeholders filled. Resolve that file to an absolute path from this skill's installed directory, not the target repository.
 
@@ -65,6 +65,8 @@ Nothing is left in a third state. A finding you have not checked is not worked.
 **Done when** every finding of the round has a commit or a decline, and no two commits remove the same mechanism.
 
 ## 4. Carry the round forward
+
+When the grant above allows it, push the round's commits to the head branch with a plain `git push` as soon as the round is worked, before the next round or step 5. Never force: the head branch may carry someone else's commits.
 
 Round N+1's prompt fills the reviewer's earlier-rounds block with both halves of round N: each fix with its mechanism and commit, and each decline with your reason. The reviewer then either drops a declined point or comes back with new evidence, and files a failure at a fixed mechanism as a missed site rather than a new bug. Without the declines the loop can never go quiet, because a fresh agent re-raises what the last one raised. Without the fixes it cannot tell you that a fix was a patch.
 
@@ -93,8 +95,8 @@ One note, not one thread per finding. An agent opening threads against its own r
 | "The reviewer is wrong, moving on" | A decline is written down, with what you checked. Silence is not a decline. |
 | "Three rounds ran, so it is clean" | Budget exhaustion and a clean round are different hand-backs. |
 | "Skip loading project instructions" | Instruction compliance is part of the review. |
-| "A costlier model would review better" | Follow the runtime model policy; do not silently escalate. |
+| "The default is right for every round" | Choose each round's reviewer from the `review` row by the diff: a large, risky or subtle diff takes a stronger choice, a small mechanical one a smaller one. Name the choice in the hand-back. |
 | "One thread per finding is more traceable" | One note. Threads against your own request are theater. |
 | "The base is `main`, that is what the API said" | Both forges return a bare name. Fetch, then diff against `origin/main`. |
-| "The fixes are committed, so the note can claim them" | Standalone commits are local until a fresh ask pushes them. The note says which. |
+| "The fixes are committed, so the note can claim them" | Unless the owned-remote rules allow pushing the request's head branch, standalone commits are local until a fresh ask pushes them. The note says which. |
 | "The number names the request, so the diff is right" | The number is remote, HEAD is local. Confirm HEAD is on the head ref. |

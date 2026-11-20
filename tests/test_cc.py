@@ -3,6 +3,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -13,8 +14,11 @@ from unittest.mock import patch
 
 import cc
 
+# Tests never read this machine's own config file.
+os.environ['XDG_CONFIG_HOME'] = tempfile.mkdtemp()
 
-class InstallTests(unittest.TestCase):
+
+class InstallBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -34,6 +38,8 @@ class InstallTests(unittest.TestCase):
             cc.cmd_install(argparse.Namespace(target=target))
         return output.getvalue()
 
+
+class InstallTests(InstallBase):
     def test_both_targets_and_repeat_install(self):
         self.install()
         for target in self.roots:
@@ -195,14 +201,387 @@ multi_agent = false
         self.assertFalse(cc.config_dir().exists())
 
 
+class MachineConfigTests(InstallBase):
+    """The per-machine config file adds sources of rules and skills, variables and a default reviewer."""
+
+    def setUp(self):
+        super().setUp()
+        p = patch.object(cc, 'CACHE', self.base / 'cache')
+        p.start()
+        self.addCleanup(p.stop)
+        self.config = self.base / 'config.toml'
+        p = patch.object(cc, 'machine_config_path', lambda: self.config)
+        p.start()
+        self.addCleanup(p.stop)
+        self.source = self.base / 'src'
+        (self.source / 'rules').mkdir(parents=True)
+        self.git('init', '-q', '-b', 'master')
+        self.write('rules/julia.md', '---\npaths:\n  - "**/*.jl"\n  - "**/Project.toml"\n---\n\n# Julia\n\n- Use the project env.\n')
+        self.write('rules/compute.md', '# Compute\n\n- Stage data in {{share_scratch}}.\n')
+        self.write('skills/mine/SKILL.md', '---\nname: mine\ndescription: d\n---\n\nMine.\n')
+        self.write('skills/mine/references/r.md', 'ref\n')
+        self.write('skills/theirs/SKILL.md', '---\nname: theirs\ndescription: d\n---\n\nTheirs.\n')
+        self.commit()
+
+    def git(self, *args):
+        subprocess.run(['git', '-C', str(self.source), '-c', 'commit.gpgsign=false', '-c', 'user.name=t',
+                        '-c', 'user.email=t@t', *args], check=True, capture_output=True)
+
+    def write(self, rel, text):
+        path = self.source / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def commit(self):
+        self.git('add', '-A')
+        self.git('commit', '-q', '-m', 'change')
+
+    def configure(self, text):
+        self.config.write_text(text)
+
+    def with_source(self, select='rules = "all"\nskills = "all"\n', extra=''):
+        self.configure(extra + f'[[sources]]\nrepo = "{self.source.as_uri()}"\n' + select)
+
+    def test_rules_reach_both_targets(self):
+        self.with_source()
+        self.install()
+        claude = cc.config_dir()
+        self.assertIn('# Julia', (claude / 'rules/julia.md').read_text())
+        agents = (cc.config_dir('codex') / 'AGENTS.md').read_text()
+        self.assertIn('_From rules/julia.md, scoped by its frontmatter:_\n\n```yaml\npaths:\n  - "**/*.jl"', agents)
+        self.assertIn('- Use the project env.', agents)
+        self.assertEqual(agents.count('---\npaths:'), 0)
+        for target in self.roots:
+            self.assertEqual(cc.check_local(cc.config_dir(target), target), [])
+
+    def test_skills_reach_both_targets(self):
+        self.with_source()
+        self.install()
+        self.assertIn('Mine.', (cc.config_dir() / 'skills/mine/SKILL.md').read_text())
+        self.assertEqual((self.roots['codex']['skills'] / 'mine/references/r.md').read_text(), 'ref\n')
+
+    def test_only_the_named_skills_and_rules_install(self):
+        self.with_source('skills = ["theirs"]\nrules = ["julia"]\n')
+        self.install()
+        claude = cc.config_dir()
+        self.assertTrue((claude / 'skills/theirs/SKILL.md').exists())
+        self.assertFalse((claude / 'skills/mine').exists())
+        self.assertTrue((claude / 'rules/julia.md').exists())
+        self.assertFalse((claude / 'rules/compute.md').exists())
+
+    def test_a_source_picks_nothing_by_default(self):
+        self.with_source(select='')
+        with self.assertRaisesRegex(ValueError, 'config.toml'):
+            cc.machine_config()
+
+    def test_a_source_without_rules_or_skills_folders_stops_the_install(self):
+        self.git('mv', 'rules', 'rule')
+        self.git('mv', 'skills', 'skill')
+        self.commit()
+        self.with_source()
+        with self.assertRaisesRegex(RuntimeError, 'neither rules/ nor skills/'):
+            self.install()
+
+    def test_a_missing_name_stops_the_install(self):
+        self.with_source('skills = ["nope"]\n')
+        with self.assertRaisesRegex(RuntimeError, 'nope'):
+            self.install()
+
+    def test_vars_fill_rules_and_default_to_none(self):
+        self.with_source(extra='[vars]\nshare_scratch = "/data/claude"\n\n')
+        self.install()
+        self.assertIn('Stage data in /data/claude.', (cc.config_dir() / 'rules/compute.md').read_text())
+        self.assertIn('Stage data in /data/claude.', (cc.config_dir('codex') / 'AGENTS.md').read_text())
+        self.with_source()
+        self.install()
+        self.assertIn('Stage data in none.', (cc.config_dir() / 'rules/compute.md').read_text())
+
+    def test_two_refs_of_one_repo_keep_their_own_checkouts(self):
+        self.git('checkout', '-q', '-b', 'dev')
+        self.write('skills/theirs/SKILL.md', '---\nname: theirs\ndescription: d\n---\n\nTheirs on dev.\n')
+        self.commit()
+        self.git('checkout', '-q', 'master')
+        uri = self.source.as_uri()
+        self.configure(f'[[sources]]\nrepo = "{uri}"\nref = "master"\nskills = ["theirs"]\n\n'
+                       f'[[sources]]\nrepo = "{uri}"\nref = "dev"\nskills = ["mine"]\n')
+        self.install()
+        self.assertIn('Theirs.', (cc.config_dir() / 'skills/theirs/SKILL.md').read_text())
+        self.assertEqual(cc.check_sources(), [])
+
+    def test_frontmatter_passes_through_as_written(self):
+        for text, front, body in (
+            ('---\npaths: [\n  "a",  # why\n  "b"\n]\n---\n# X\n', 'paths: [\n  "a",  # why\n  "b"\n]', '# X\n'),
+            ('---\r\npaths:\r\n  - "a"\r\n---\r\nbody\r\n', 'paths:\r\n  - "a"', 'body\r\n'),
+            ('---\npaths: "a"\n---', 'paths: "a"', ''),
+            ('# No frontmatter\n', '', '# No frontmatter\n'),
+            ('---\nunclosed\n', '', '---\nunclosed\n'),
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(cc.split_frontmatter(text), (front, body))
+
+    def test_a_rule_without_paths_applies_everywhere_in_codex(self):
+        self.with_source()
+        self.install()
+        self.assertIn('_From rules/compute.md, applies everywhere._', (cc.config_dir('codex') / 'AGENTS.md').read_text())
+
+    def test_source_changes_show_upstream_then_install(self):
+        self.with_source()
+        self.install()
+        self.assertEqual(cc.check_sources(), [])
+        (self.source / 'rules' / 'compute.md').unlink()
+        self.write('rules/julia.md', '# Julia\n\n- Changed.\n')
+        self.commit()
+        self.assertEqual(len(cc.check_sources()), 1)
+        self.install()
+        claude = cc.config_dir()
+        self.assertIn('Changed.', (claude / 'rules/julia.md').read_text())
+        self.assertFalse((claude / 'rules/compute.md').exists())
+
+    def test_missing_clone_is_drift_not_a_crash(self):
+        self.with_source()
+        self.assertTrue(any('run install' in line for line in cc.check_local(cc.config_dir(), 'claude')))
+
+    def test_default_reviewer_reaches_the_instructions(self):
+        self.configure('[review]\ndefault = "codex"\n')
+        self.install()
+        for target, name in (('claude', 'CLAUDE.md'), ('codex', 'AGENTS.md')):
+            self.assertIn('Default reviewer for `issue-to-pr` and `review-loop`: `codex`',
+                          (cc.config_dir(target) / name).read_text())
+
+    def test_vault_inputs_are_accepted(self):
+        self.configure('[vault]\ninputs = ["calendar", "github"]\n')
+        self.assertEqual(cc.machine_config()['vault'], {'inputs': ['calendar', 'github']})
+
+    def test_no_config_adds_nothing(self):
+        self.install()
+        self.assertNotIn('Default reviewer', (cc.config_dir() / 'CLAUDE.md').read_text())
+        self.assertNotIn('StopFailure', json.loads((cc.config_dir() / 'settings.json').read_text())['hooks'])
+
+    def test_usage_limit_continue_hook_installs_when_configured(self):
+        self.configure('[hooks]\nusage_limit_continue = true\n')
+        self.install()
+        [group] = json.loads((cc.config_dir() / 'settings.json').read_text())['hooks']['StopFailure']
+        self.assertIn('hooks/usage_limit_continue.py', group['hooks'][0]['command'])
+        self.configure('[hooks]\nusage_limit_continue = false\n')
+        self.install()
+        self.assertNotIn('StopFailure', json.loads((cc.config_dir() / 'settings.json').read_text())['hooks'])
+
+    def test_invalid_config_is_refused(self):
+        for text in ('[review]\ndefault = "nobody"\n', 'reviewer = "codex"\n', '[[sources]]\nskills = "all"\n',
+                     '[[sources]]\nrepo = "x"\nskills = "some"\n', '[vars]\nn = 1\n',
+                     '[vault]\ninputs = "mail"\n', '[vault]\nsources = ["mail"]\n',
+                     'vars = ["a"]\n', 'review = "codex"\n', 'vault = "x"\n', 'sources = {repo = "x"}\n',
+                     '[[sources]]\nrepo = "x"\nref = 1\nskills = "all"\n',
+                     '[[sources]]\nrepo = "x"\nrules = []\nskills = []\n',
+                     'hooks = true\n', '[hooks]\nusage_limit_continue = "yes"\n', '[hooks]\nother = true\n'):
+            with self.subTest(text=text):
+                self.configure(text)
+                with self.assertRaisesRegex(ValueError, 'config.toml'):
+                    cc.machine_config()
+
+    def test_a_rule_from_two_places_fails(self):
+        self.with_source()
+        with patch.object(cc, 'RULES', self.source / 'rules'), self.assertRaisesRegex(RuntimeError, 'comes from both'):
+            self.install()
+
+    def test_a_skill_this_repo_has_fails(self):
+        self.write('skills/tdd/SKILL.md', '---\nname: tdd\ndescription: d\n---\n')
+        self.commit()
+        self.with_source('skills = ["tdd"]\n')
+        with self.assertRaisesRegex(RuntimeError, 'tdd'):
+            self.install()
+
+
+class ModelPolicyTests(InstallBase):
+    """[models] picks a model and effort per runtime and task kind, inside limits per model."""
+
+    def setUp(self):
+        super().setUp()
+        self.config = self.base / 'config.toml'
+        p = patch.object(cc, 'machine_config_path', lambda: self.config)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def instructions(self, target):
+        return (cc.config_dir(target) / ('CLAUDE.md' if target == 'claude' else 'AGENTS.md')).read_text()
+
+    def test_built_in_policy_reaches_both_runtimes(self):
+        self.install()
+        claude, codex = self.instructions('claude'), self.instructions('codex')
+        self.assertIn('| review | `sonnet` at `medium` | `haiku` at `medium`, `sonnet` at `high`, `opus` at `high` |', claude)
+        self.assertIn('| explore | `haiku` at `medium` | `sonnet` at `medium` |', claude)
+        self.assertIn('| judgment | `opus` at `medium` | `opus` at `high`, `opus` at `xhigh` |', claude)
+        self.assertIn('| design | `opus` at `medium` | `opus` at `high`, `opus` at `xhigh` |', claude)
+        self.assertIn('| implement | `sonnet` at `medium` | `haiku` at `medium`, `sonnet` at `high`, `opus` at `medium`, `opus` at `high` |', claude)
+        # The guideline asks for a choice in both directions, with examples of each.
+        self.assertIn('**Stronger**', claude)
+        self.assertIn('**Smaller**', claude)
+        self.assertNotIn('synthesis', claude)
+        self.assertIn('inherits your model and effort', claude)
+        self.assertIn('| review | `default` at `medium` |', codex)
+        # Codex's own table uses `default`, so its section must say what that means.
+        self.assertIn('A model of `default` means leaving the model unset', codex.split('| Task |', 1)[0])
+        self.assertIn('explore', claude.split('## Models', 1)[1])
+        # Each runtime also learns the other's review choice, for review-loop's --reviewer claude|codex.
+        self.assertIn('`codex exec -m <model> -c model_reasoning_effort=<effort>`', claude)
+        self.assertIn('`claude -p --model <model> --effort <effort>`', codex)
+        self.assertIn('CLAUDE_CODE_EFFORT_LEVEL', claude)
+
+    def test_a_task_override_keeps_the_other_built_ins(self):
+        self.config.write_text('[models.codex.tasks.review]\ndefault = "gpt-x@high"\nallowed = ["gpt-x@xhigh"]\n')
+        self.install()
+        codex = self.instructions('codex')
+        self.assertIn('| review | `gpt-x` at `high` | `gpt-x` at `xhigh` |', codex)
+        self.assertIn('| explore | `default` at `medium` |', codex)
+        self.assertIn('`gpt-x` at `high`', self.instructions('claude'))
+
+    def test_limits_forbid_a_choice_even_when_the_config_sets_none(self):
+        self.config.write_text('[models.claude.tasks.review]\ndefault = "opus@low"\n')
+        with self.assertRaisesRegex(ValueError, 'opus@low.*min_effort'):
+            cc.machine_config()
+
+    def test_effort_bounds_cover_every_choice(self):
+        for text, error in (('[models.claude.tasks.explore]\ndefault = "sonnet@low"\n', 'min_effort'),
+                            ('[models.claude.tasks.review]\ndefault = "sonnet@max"\n', 'max_effort'),
+                            ('[models.codex.tasks.review]\ndefault = "default@ultra"\n', 'max_effort')):
+            with self.subTest(text=text):
+                self.config.write_text(text)
+                with self.assertRaisesRegex(ValueError, error):
+                    cc.machine_config()
+
+    def test_judgment_and_design_take_only_their_models(self):
+        self.config.write_text('[models.claude.tasks.judgment]\ndefault = "sonnet@high"\n')
+        with self.assertRaisesRegex(ValueError, 'judgment.*opus'):
+            cc.machine_config()
+
+    def test_max_effort_caps_the_claude_settings(self):
+        settings = json.loads(cc.render_settings(self.base))
+        self.assertEqual(settings['maxEffortLevel'], 'xhigh')
+        self.config.write_text('[models.claude]\nmax_effort = "high"\n'
+                               '[models.claude.tasks.design]\ndefault = "opus@medium"\nallowed = ["opus@high"]\n'
+                               '[models.claude.tasks.judgment]\ndefault = "opus@medium"\nallowed = ["opus@high"]\n')
+        self.assertEqual(json.loads(cc.render_settings(self.base))['maxEffortLevel'], 'high')
+        self.config.write_text('[models.claude]\nmax_effort = "max"\n')
+        self.assertNotIn('maxEffortLevel', json.loads(cc.render_settings(self.base)))
+
+    def test_skill_frontmatter_follows_the_policy(self):
+        self.config.write_text('[models.claude]\nmin_effort = "high"\n\n[models.claude.tasks.judgment]\ndefault = "opus@high"\n'
+                               '\n[models.claude.tasks.design]\ndefault = "opus@high"\n[models.claude.tasks.explore]\n'
+                               'default = "sonnet@high"\n[models.claude.tasks.audit]\ndefault = "sonnet@high"\n'
+                               '[models.claude.tasks.implement]\ndefault = "sonnet@high"\n'
+                               '[models.claude.tasks.review]\ndefault = "sonnet@high"\n')
+        self.install()
+        front = (cc.config_dir() / 'skills/dispatch/SKILL.md').read_text().split('---')[1]
+        self.assertIn('model: opus\neffort: high\n', front)
+        codex = (self.roots['codex']['skills'] / 'dispatch/SKILL.md').read_text()
+        self.assertNotIn('{{', codex)
+        # Codex has no frontmatter model, so its dispatch must not claim the first turn runs on one.
+        self.assertIn('first turn', (cc.config_dir() / 'skills/dispatch/SKILL.md').read_text())
+        self.assertNotIn('first turn', codex)
+
+    def test_install_writes_the_policy_the_guard_reads(self):
+        self.install()
+        policy = json.loads((cc.config_dir() / 'model-policy.json').read_text())
+        self.assertIn(['opus', 'high'], policy['choices'])
+        self.assertEqual(policy['min_effort'], 'medium')
+
+    def test_a_tighter_limit_rejects_a_built_in_default(self):
+        self.config.write_text('[models.claude.limits]\nhaiku = { max_effort = "low" }\n')
+        with self.assertRaisesRegex(ValueError, 'haiku@medium.*max_effort'):
+            cc.machine_config()
+
+    def test_invalid_model_tables_are_refused(self):
+        for text in ('[models.gemini.tasks.review]\ndefault = "x@low"\n',
+                     '[models.claude.tasks.coding]\ndefault = "sonnet@low"\n',
+                     '[models.claude.tasks.review]\ndefault = "sonnet@turbo"\n',
+                     '[models.claude.tasks.review]\ndefault = "claude-sonnet-5-5@low"\n',
+                     '[models.claude.tasks.review]\nallowed = ["opus@high"]\n',
+                     '[models.claude.tasks.review]\ndefault = "sonnet@low"\nallowed = "opus@high"\n',
+                     '[models.claude.limits]\nopus = { min_effort = "high", max_effort = "low" }\n',
+                     '[models.claude.limits]\nsonet = { max_effort = "low" }\n',
+                     '[models.claude.tasks.review]\ndefault = "sonnet@medium"\nmodels = ["sonet", "sonnet"]\n',
+                     '[models.claude]\nreview = "sonnet@low"\n',
+                     '[models.claude]\nmin_effort = "high"\nmax_effort = "medium"\n',
+                     '[models.claude.tasks.review]\ndefault = "sonnet@medium"\nmodels = "sonnet"\n',
+                     'models = 1\n'):
+            with self.subTest(text=text):
+                self.config.write_text(text)
+                with self.assertRaisesRegex(ValueError, 'config.toml'):
+                    cc.machine_config()
+
+    def test_the_template_describes_exactly_the_task_kinds(self):
+        template = (cc.REPO / 'instructions' / 'models.md').read_text()
+        described = re.findall(r'^- `(\w+)`: ', template, re.M)
+        self.assertEqual(described, list(cc.TASKS))
+        for target in ('claude', 'codex'):
+            self.assertNotIn('{{', cc.render_models(target, cc.machine_config()['models']))
+
+    def test_explore_handoff_is_in_the_policy(self):
+        self.install()
+        models = self.instructions('claude').split('## Models', 1)[1]
+        # It sits with the guideline, before the table, where it is read.
+        self.assertLess(models.index('Hand broad reading'), models.index('| Task |'))
+
+
 class SettingsTests(unittest.TestCase):
-    def test_backslash_guard_is_installed_on_windows_only(self):
+    def test_heredoc_guard_is_installed_on_every_platform(self):
         for windows in (True, False):
             with self.subTest(windows=windows), patch.object(cc, 'WINDOWS', windows), \
                     tempfile.TemporaryDirectory() as tmp:
                 settings = cc.render_settings(Path(tmp)).decode()
-                self.assertEqual('heredoc_guard.py' in settings, windows)
-                self.assertEqual('PreToolUse' in settings, windows)
+                self.assertIn('heredoc_guard.py', settings)
+
+    def test_model_guard_is_registered_on_agent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            hooks = json.loads(cc.render_settings(Path(tmp)))['hooks']['PreToolUse']
+        commands = [h['command'] for g in hooks if g.get('matcher') == 'Agent' for h in g['hooks']]
+        self.assertTrue(any('hooks/model_guard.py' in c for c in commands), commands)
+
+    def repo_auto_mode(self):
+        return json.loads((cc.REPO / 'settings.json').read_text()).get('autoMode')
+
+    def test_owned_remotes_extend_the_auto_mode_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rules = Path(tmp) / 'rules'
+            rules.mkdir()
+            (rules / 'owned-remotes.md').write_text(
+                '- github.com/org/*\n- gitlab.example.com/team/tool\n')
+            settings = json.loads(cc.render_settings(Path(tmp)))
+        repo_env = (self.repo_auto_mode() or {}).get('environment', ['$defaults'])
+        env = settings['autoMode']['environment']
+        self.assertEqual(env[:-1], repo_env)
+        self.assertIn('github.com/org/*, gitlab.example.com/team/tool', env[-1])
+
+    def test_every_markdown_bullet_form_is_an_owned_remote(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'owned-remotes.md'
+            path.write_text('# Owned remotes\n\n- a/*\n* b/*\n+ c/*\n-\td/*\n  - e/*\n')
+            self.assertEqual(cc.owned_remotes(path), ['a/*', 'b/*', 'c/*', 'd/*', 'e/*'])
+
+    def test_owned_remotes_listed_in_another_rules_file_are_ignored(self):
+        # Only the one file defines ownership, so text that merely looks like
+        # an owned-remotes list cannot widen the classifier's trust.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'rules').mkdir()
+            (Path(tmp) / 'rules' / 'git.md').write_text(
+                '## Owned remotes\n\n- github.com/org/*\n')
+            settings = json.loads(cc.render_settings(Path(tmp)))
+        self.assertEqual(settings.get('autoMode'), self.repo_auto_mode())
+
+    def test_private_owned_remotes_stay_out_of_the_auto_mode_environment(self):
+        # The classifier cannot check visibility, so it would trust a public
+        # repo under a `(private)` entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'rules').mkdir()
+            (Path(tmp) / 'rules' / 'owned-remotes.md').write_text(
+                '## Owned remotes\n\n- github.com/me/* (private)\n')
+            settings = json.loads(cc.render_settings(Path(tmp)))
+        self.assertEqual(settings.get('autoMode'), self.repo_auto_mode())
+
+    def test_without_owned_remotes_auto_mode_is_the_repo_value(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            settings = json.loads(cc.render_settings(Path(tmp)))
+        self.assertEqual(settings.get('autoMode'), self.repo_auto_mode())
 
 
     def test_home_is_the_profile_folder_on_windows_only(self):
@@ -321,6 +700,29 @@ class VendorTests(unittest.TestCase):
                     cc.cmd_vendor(argparse.Namespace(names=[]))
                 self.assertEqual((cc.SKILLS/'demo/SKILL.md').read_text(), 'portable\n')
                 self.assertEqual(sources.read_bytes(), recorded)
+
+
+class SkillGroupTests(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.skills = Path(tmp.name) / 'skills'
+        for rel in ('solo/SKILL.md', 'team/beta/SKILL.md', 'team/gamma/SKILL.md', 'team/gamma/scripts/run.py'):
+            (self.skills / rel).parent.mkdir(parents=True, exist_ok=True)
+            (self.skills / rel).write_text(rel + '\n')
+        p = patch.object(cc, 'SKILLS', self.skills)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_group_folder_installs_its_skills_flat(self):
+        self.assertEqual(sorted(cc.skill_files('claude')), [
+            'beta/SKILL.md', 'gamma/SKILL.md', 'gamma/scripts/run.py', 'solo/SKILL.md'])
+
+    def test_same_name_in_two_places_fails(self):
+        (self.skills / 'team/solo').mkdir()
+        (self.skills / 'team/solo/SKILL.md').write_text('again\n')
+        with self.assertRaisesRegex(RuntimeError, 'solo'):
+            cc.skill_files('claude')
 
 
 class SourceReproductionTests(unittest.TestCase):

@@ -5,5 +5,8 @@ rules live in `~/.claude/rules/` (or `$CLAUDE_CONFIG_DIR/rules/`), with `paths:`
 frontmatter for file-scoped rules. Auto memory is disabled in the installed settings;
 project knowledge goes into the repository instead (see "Keep project knowledge in the project").
 
+The owned-remotes file is `owned-remotes.md` in that rules directory. It loads
+with the other rules.
+
 Load skills through the Skill tool. Resolve each supporting file relative to the
 loaded skill's directory, not the working repository.
